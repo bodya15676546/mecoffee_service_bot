@@ -1,27 +1,33 @@
 import os
-from flask import Flask, request
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+import requests
+from flask import Flask, request, jsonify
 
 TOKEN = os.environ.get("BOT_TOKEN")
+API_URL = f"https://api.telegram.org/bot{TOKEN}"
 
 app = Flask(__name__)
-application = Application.builder().token(TOKEN).build()
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Mecoffee Service Bot працює ✅")
-
-application.add_handler(CommandHandler("start", start))
 
 @app.route(f"/{TOKEN}", methods=["POST"])
-async def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    await application.initialize()
-    await application.process_update(update)
-    return "ok"
+def webhook():
+    data = request.get_json()
+
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
+
+        if text == "/start":
+            requests.post(
+                f"{API_URL}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": "Mecoffee Service Bot працює ✅"
+                }
+            )
+
+    return jsonify({"ok": True})
 
 @app.route("/")
-def health():
+def home():
     return "Bot is running"
 
 if __name__ == "__main__":
