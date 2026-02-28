@@ -81,7 +81,7 @@ def webhook():
         first_key, first_label = ingredients[0]
         user_states[chat_id] = first_key
         user_data[chat_id][first_key] = 0
-        send_message(chat_id, f"{first_label}\nNapište počet balení (číslo):")
+        send_message(chat_id, f"{first_label}\nZadejte počet balení, které zůstaly v automatu po doplnění (číslo):")
         return jsonify({"ok": True})
 
     # Інгредієнти (простий ввід числа)
@@ -93,7 +93,7 @@ def webhook():
         if index + 1 < len(ingredients):
             next_key, next_label = ingredients[index + 1]
             user_states[chat_id] = next_key
-            send_message(chat_id, f"{next_label}\nNapište počet balení (číslo):")
+            send_message(chat_id, f"{next_label}\nZadejte počet balení, které zůstaly v automatu po doplnění (číslo):")
         else:
             user_states[chat_id] = "photo_after"
             send_message(chat_id, "📸 Udělejte foto automatu PO vyčištění")
@@ -143,3 +143,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
