@@ -13,14 +13,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 application.add_handler(CommandHandler("start", start))
 
-@app.post(f"/{TOKEN}")
+@app.route(f"/{TOKEN}", methods=["POST"])
 async def telegram_webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
     await application.initialize()
     await application.process_update(update)
     return "ok"
 
-@app.get("/")
+@app.route("/")
 def health():
     return "Bot is running"
 
