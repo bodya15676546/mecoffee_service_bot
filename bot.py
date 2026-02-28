@@ -1,156 +1,138 @@
 import os
 import requests
+import json
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, request, jsonify
+from datetime import datetime
 
 TOKEN = os.environ.get("BOT_TOKEN")
 API_URL = f"https://api.telegram.org/bot{TOKEN}"
+
+google_creds = json.loads(os.environ.get("GOOGLE_CREDENTIALS"))
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+]
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(google_creds, scope)
+gc = gspread.authorize(credentials)
+sheet = gc.open("Mecoffee_Service_Reports").sheet1
 
 app = Flask(__name__)
 
 user_states = {}
 user_data = {}
 
-ingredients_order = [
-    ("coffee", "☕ Кава"),
-    ("milk", "🥛 Молоко"),
-    ("chocolate", "🍫 Шоколад"),
-    ("cream", "🥃 Ірландський крем"),
-    ("cups_m", "🥤 Стакани M"),
-    ("cups_l", "🥤 Стакани L"),
+ingredients = [
+    ("coffee", "☕ Káva"),
+    ("milk", "🥛 Mléko"),
+    ("chocolate", "🍫 Čokoláda"),
+    ("cream", "🥃 Irish Cream"),
+    ("cups_m", "🥤 Kelímky M"),
+    ("cups_l", "🥤 Kelímky L"),
 ]
 
-def send_message(chat_id, text, reply_markup=None):
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-
+def send_message(chat_id, text, keyboard=None):
+    payload = {"chat_id": chat_id, "text": text}
+    if keyboard:
+        payload["reply_markup"] = keyboard
     requests.post(f"{API_URL}/sendMessage", json=payload)
 
-def edit_message(chat_id, message_id, text, reply_markup=None):
-    payload = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text
-    }
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
+def upload_photo(file_id):
+    file_info = requests.get(f"{API_URL}/getFile?file_id={file_id}").json()
+    file_path = file_info["result"]["file_path"]
+    return f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
 
-    requests.post(f"{API_URL}/editMessageText", json=payload)
-
-def ingredient_keyboard(value):
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "➖", "callback_data": "minus"},
-                {"text": f"{value}", "callback_data": "value"},
-                {"text": "➕", "callback_data": "plus"},
-            ],
-            [
-                {"text": "Далі ➡️", "callback_data": "next"}
-            ]
-        ]
-    }
+def already_submitted_today(username):
+    today = datetime.now().strftime("%Y-%m-%d")
+    records = sheet.get_all_records()
+    for row in records:
+        if row["User"] == username and row["Date"].startswith(today):
+            return True
+    return False
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json()
 
-    # Обробка callback кнопок
-    if "callback_query" in data:
-        query = data["callback_query"]
-        chat_id = query["message"]["chat"]["id"]
-        message_id = query["message"]["message_id"]
-        action = query["data"]
-
-        current_key = user_states.get(chat_id)
-
-        if current_key and current_key in user_data[chat_id]:
-            value = user_data[chat_id][current_key]
-        else:
-            value = 0
-
-        if action == "plus":
-            value += 1
-        elif action == "minus" and value > 0:
-            value -= 1
-        elif action == "next":
-            # зберегти і перейти до наступного
-            current_index = [k for k, _ in ingredients_order].index(current_key)
-            if current_index + 1 < len(ingredients_order):
-                next_key, next_label = ingredients_order[current_index + 1]
-                user_states[chat_id] = next_key
-                user_data[chat_id][next_key] = 0
-                edit_message(
-                    chat_id,
-                    message_id,
-                    f"{next_label}\n\nКількість пачок:",
-                    ingredient_keyboard(0)
-                )
-                return jsonify({"ok": True})
-            else:
-                user_states[chat_id] = "photo_after"
-                send_message(chat_id, "📸 Зробіть фото автомата ПІСЛЯ очищення")
-                return jsonify({"ok": True})
-
-        user_data[chat_id][current_key] = value
-        label = dict(ingredients_order)[current_key]
-
-        edit_message(
-            chat_id,
-            message_id,
-            f"{label}\n\nКількість пачок:",
-            ingredient_keyboard(value)
-        )
-
-        return jsonify({"ok": True})
-
     if "message" not in data:
         return jsonify({"ok": True})
 
-    message = data["message"]
-    chat_id = message["chat"]["id"]
+    msg = data["message"]
+    chat_id = msg["chat"]["id"]
+    username = msg["from"].get("username", "unknown")
 
     if chat_id not in user_data:
         user_data[chat_id] = {}
 
-    # START
-    if message.get("text") == "/start":
+    # Кнопка старту
+    if msg.get("text") in ["/start", "➕ Přidat report"]:
+        if already_submitted_today(username):
+            send_message(chat_id, "❌ Dnešní report už byl odeslán.")
+            return jsonify({"ok": True})
+
         user_states[chat_id] = "photo_before"
-        send_message(chat_id, "📸 Зробіть фото автомата ДО очищення")
+        send_message(chat_id, "📸 Udělejte foto automatu PŘED čištěním")
         return jsonify({"ok": True})
 
     # Фото ДО
-    if user_states.get(chat_id) == "photo_before" and "photo" in message:
-        first_key, first_label = ingredients_order[0]
+    if user_states.get(chat_id) == "photo_before" and "photo" in msg:
+        user_data[chat_id]["photo_before"] = upload_photo(msg["photo"][-1]["file_id"])
+        first_key, first_label = ingredients[0]
         user_states[chat_id] = first_key
         user_data[chat_id][first_key] = 0
-        send_message(
-            chat_id,
-            f"{first_label}\n\nКількість пачок:",
-            ingredient_keyboard(0)
-        )
+        send_message(chat_id, f"{first_label}\nNapište počet balení (číslo):")
+        return jsonify({"ok": True})
+
+    # Інгредієнти (простий ввід числа)
+    if user_states.get(chat_id) in [k for k, _ in ingredients]:
+        current = user_states[chat_id]
+        user_data[chat_id][current] = msg.get("text", "0")
+
+        index = [k for k, _ in ingredients].index(current)
+        if index + 1 < len(ingredients):
+            next_key, next_label = ingredients[index + 1]
+            user_states[chat_id] = next_key
+            send_message(chat_id, f"{next_label}\nNapište počet balení (číslo):")
+        else:
+            user_states[chat_id] = "photo_after"
+            send_message(chat_id, "📸 Udělejte foto automatu PO vyčištění")
         return jsonify({"ok": True})
 
     # Фото ПІСЛЯ
-    if user_states.get(chat_id) == "photo_after" and "photo" in message:
+    if user_states.get(chat_id) == "photo_after" and "photo" in msg:
+        user_data[chat_id]["photo_after"] = upload_photo(msg["photo"][-1]["file_id"])
         user_states[chat_id] = "photo_table"
-        send_message(chat_id, "📸 Зробіть фото столу та зони навколо")
+        send_message(chat_id, "📸 Udělejte foto stolu a okolí")
         return jsonify({"ok": True})
 
     # Фото столу
-    if user_states.get(chat_id) == "photo_table" and "photo" in message:
-        summary = "✅ Звіт завершено\n\n"
-        for key, label in ingredients_order:
-            summary += f"{label}: {user_data[chat_id].get(key, 0)}\n"
+    if user_states.get(chat_id) == "photo_table" and "photo" in msg:
+        user_data[chat_id]["photo_table"] = upload_photo(msg["photo"][-1]["file_id"])
 
-        send_message(chat_id, summary)
+        sheet.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            username,
+            user_data[chat_id].get("coffee",0),
+            user_data[chat_id].get("milk",0),
+            user_data[chat_id].get("chocolate",0),
+            user_data[chat_id].get("cream",0),
+            user_data[chat_id].get("cups_m",0),
+            user_data[chat_id].get("cups_l",0),
+            user_data[chat_id].get("photo_before"),
+            user_data[chat_id].get("photo_after"),
+            user_data[chat_id].get("photo_table")
+        ])
+
+        keyboard = {
+            "keyboard": [["➕ Přidat report"]],
+            "resize_keyboard": True
+        }
+
+        send_message(chat_id, "✅ Report uložen", keyboard)
 
         user_states.pop(chat_id, None)
         user_data.pop(chat_id, None)
-
         return jsonify({"ok": True})
 
     return jsonify({"ok": True})
