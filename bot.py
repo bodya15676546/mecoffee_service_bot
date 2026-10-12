@@ -42,9 +42,19 @@ app = Flask(__name__)
 #  "hradek":{"login":"hradek","password":"CHANGE_ME","location":"Hrádek u Rokycan","worksheet":"Hradek-u-Rokycan"}}
 try:
     LOCATION_ACCOUNTS = json.loads(os.environ.get("LOCATION_ACCOUNTS_JSON", "{}"))
+    if not isinstance(LOCATION_ACCOUNTS, dict):
+        log.error("LOCATION_ACCOUNTS_JSON must be a JSON object, not %s", type(LOCATION_ACCOUNTS).__name__)
+        LOCATION_ACCOUNTS = {}
 except json.JSONDecodeError:
     LOCATION_ACCOUNTS = {}
     log.exception("LOCATION_ACCOUNTS_JSON is not valid JSON")
+
+# Log account identifiers only; never log passwords or the raw environment value.
+log.info("Location account keys loaded: %s", list(LOCATION_ACCOUNTS.keys()))
+log.info(
+    "Location logins loaded: %s",
+    [str(account.get("login", "")) for account in LOCATION_ACCOUNTS.values() if isinstance(account, dict)],
+)
 
 # Optional guide links. Add any combination of PDF, video or web-page URLs.
 # Example MAINTENANCE_GUIDES_JSON:
@@ -156,8 +166,13 @@ def ensure_worksheet(name, headers):
     return ws
 
 def account_by_login(login):
+    # Ignore accidental spaces and letter case in the login entered in Telegram.
+    supplied_login = str(login).strip().casefold()
     for account in LOCATION_ACCOUNTS.values():
-        if isinstance(account, dict) and hmac.compare_digest(str(account.get("login", "")), login):
+        if not isinstance(account, dict):
+            continue
+        configured_login = str(account.get("login", "")).strip().casefold()
+        if configured_login and hmac.compare_digest(configured_login, supplied_login):
             return account
     return None
 
