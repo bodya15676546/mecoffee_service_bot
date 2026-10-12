@@ -102,7 +102,7 @@ maintenance_steps = [
     {"key":"refill","title":"1 – Doplnění zásob","text":"Doplňte potřebné ingredience a spotřební materiál. U každé doplněné ingredience zvažte množství v gramech a zadejte ho do servisního menu automatu."},
     {"key":"mixers","title":"2 – Vyjmutí a umytí mixérů","text":"Vyjměte mixéry a umyjte je přípravkem Sanitol podle pokynů výrobce."},
     {"key":"filters","title":"3 – Pěnové filtry","text":"Zkontrolujte a vyčistěte pěnové filtry na výdechu každého mixéru."},
-    {"key":"reinstall","title":"4 – Nasazení a proplach mixérů","text":"Vraťte mixéry na místo, připojte hadičky suchých ingrediencí a v servisním menu spusťte proplach mixérů."},
+    {"key":"reinstall","title":"4 – Nasazení a proplach mixérů","text":"Vraťte mixéry na místo, připojte hadičky a otočte nosiče suchých ingrediencí zpět dolů. V servisním menu spusťte proplach mixérů."},
     {"key":"mixers_photo","title":"5 – Fotografie čistých mixérů","text":"Vyfoťte čisté mixéry po umytí a opětovném nasazení."},
     {"key":"brewer","title":"6 – Důkladné čištění spařovací jednotky","text":"Spusťte „Důkladné čištění“, nastavte dobu působení tablety na 8 minut, vložte tabletu do spařovací jednotky a zavřete dvířka."},
     {"key":"during_wait","title":"7 – Úklid během 8minutového čekání","text":"Očistěte stůl přípravkem Sanitol, doplňte cukr, opláchněte pumpičky/dávkovače sirupů a ponořte sirupové trysky na pár minut do vroucí vody."},
