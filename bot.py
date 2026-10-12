@@ -49,6 +49,15 @@ except json.JSONDecodeError:
     LOCATION_ACCOUNTS = {}
     log.exception("LOCATION_ACCOUNTS_JSON is not valid JSON")
 
+# Configure ADMIN_ACCOUNT_JSON as {"login":"admin","password":"CHANGE_ME"}.
+try:
+    ADMIN_ACCOUNT = json.loads(os.environ.get("ADMIN_ACCOUNT_JSON", "{}"))
+    if not isinstance(ADMIN_ACCOUNT, dict):
+        ADMIN_ACCOUNT = {}
+except json.JSONDecodeError:
+    ADMIN_ACCOUNT = {}
+    log.exception("ADMIN_ACCOUNT_JSON is not valid JSON")
+
 # Log account identifiers only; never log passwords or the raw environment value.
 log.info("Location account keys loaded: %s", list(LOCATION_ACCOUNTS.keys()))
 log.info(
@@ -71,59 +80,48 @@ user_data = {}
 sessions = {}  # chat_id -> authenticated location account; re-login required after restart
 
 ingredients = [
-    ("coffee", "☕ Káva"),
-    ("milk", "🥛 Mléko"),
-    ("chocolate", "🍫 Čokoláda"),
-    ("matcha", "🍵 Matcha"),
-    ("cups_s", "🥤 Kelímky S"),
-    ("cups_m", "🥤 Kelímky M"),
-    ("cups_l", "🥤 Kelímky L"),
+    ("coffee", "☕ Káva"), ("milk", "🥛 Mléko"), ("chocolate", "🍫 Čokoláda"),
+    ("matcha", "🍵 Matcha"), ("cups_s", "🥤 Kelímky S"), ("cups_m", "🥤 Kelímky M"), ("cups_l", "🥤 Kelímky L"),
 ]
 
-# Fixed fields collected during goods receipt.
 RECEIPT_FIELDS = [
-    ("cups_340", "Kelímky 340 ml", "ks"),
-    ("cups_250", "Kelímky 250 ml", "ks"),
-    ("cups_110", "Kelímky 110 ml", "ks"),
-    ("lids_80", "Víčka 80 mm", "ks"),
-    ("lids_90", "Víčka 90 mm", "ks"),
-    ("stirrers", "Míchátka", "ks"),
-    ("syrup", "Sirup", "ks"),
-    ("matcha", "Matcha", "kg"),
-    ("milk", "Mléko", "kg"),
-    ("chocolate", "Čokoláda", "kg"),
-    ("sugar", "Cukr", "kg"),
-    ("coffee", "Káva", "kg"),
+    ("cups_340", "Kelímky 340 ml (balení po 50 ks)", "balení"),
+    ("cups_250", "Kelímky 250 ml (balení po 50 ks)", "balení"),
+    ("cups_110", "Kelímky 110 ml (balení po 50 ks)", "balení"),
+    ("lids_80", "Víčka 80 mm (balení po 100 ks)", "balení"),
+    ("lids_90", "Víčka 90 mm (balení po 100 ks)", "balení"),
+    ("stirrers", "Míchátka (balení)", "balení"),
+    ("syrup", "Sirup (láhve)", "láhev"),
+    ("matcha", "Matcha (balení 1 kg)", "balení"),
+    ("milk", "Mléko (balení 500 g)", "balení"),
+    ("chocolate", "Čokoláda (balení 1 kg)", "balení"),
+    ("coffee", "Káva (balení 1 kg)", "balení"),
 ]
 
 maintenance_steps = [
-    {
-        "key": "waste",
-        "title": "1/4 – Odpad a okolí",
-        "text": "Zkontrolujte okolí automatu. Vyprázdněte odpadkový koš a ukliďte nečistoty kolem automatu. Pokud je něco poškozené, nahlaste problém.",
-    },
-    {
-        "key": "drip_tray",
-        "title": "2/4 – Odkapávací miska a odpadní nádoba",
-        "text": "Opatrně vyjměte odkapávací misku a odpadní nádobu. Vyprázdněte je, opláchněte a vraťte správně na místo. Zkontrolujte, zda nic neteče.",
-    },
-    {
-        "key": "exterior",
-        "title": "3/4 – Vnější plochy",
-        "text": "Měkkým hadříkem očistěte vnější plochy automatu a prostor kolem výdejního místa. Nepoužívejte agresivní čističe ani nestříkejte kapalinu do otvorů.",
-    },
-    {
-        "key": "coffee_unit",
-        "title": "4/4 – Čištění kávovaru",
-        "text": "Proveďte běžné čištění podle pokynů pro daný model. Nezasahujte do elektrických částí a neprovádějte servisní úkony, které nejsou součástí běžné údržby.",
-    },
+    {"key":"refill","title":"1 – Doplnění zásob","text":"Doplňte potřebné ingredience a spotřební materiál. Po údržbě zadáte aktuální počet balení v automatu."},
+    {"key":"mixers","title":"2 – Vyjmutí a umytí mixérů","text":"Vyjměte mixéry a umyjte je přípravkem Sanitol podle pokynů výrobce."},
+    {"key":"filters","title":"3 – Pěnové filtry","text":"Zkontrolujte a vyčistěte pěnové filtry na výdechu každého mixéru."},
+    {"key":"reinstall","title":"4 – Nasazení a proplach mixérů","text":"Vraťte mixéry na místo, připojte hadičky suchých ingrediencí a v servisním menu spusťte proplach mixérů."},
+    {"key":"mixers_photo","title":"5 – Fotografie čistých mixérů","text":"Vyfoťte čisté mixéry po umytí a opětovném nasazení."},
+    {"key":"brewer","title":"6 – Důkladné čištění spařovací jednotky","text":"Spusťte „Důkladné čištění“, nastavte dobu působení tablety na 8 minut, vložte tabletu do spařovací jednotky a zavřete dvířka."},
+    {"key":"during_wait","title":"7 – Úklid během 8minutového čekání","text":"Očistěte stůl přípravkem Sanitol, doplňte cukr, opláchněte pumpičky/dávkovače sirupů a ponořte sirupové trysky na pár minut do vroucí vody."},
+    {"key":"before_drain","title":"8 – Kontrola vnitřku před vylitím vody","text":"Odstraňte rozsypaný prášek a další nečistoty uvnitř automatu. Otřete vnější povrch spařovací jednotky, aby na něm nezůstaly zbytky kávy."},
+    {"key":"drain","title":"9 – Vylití vody a odpadní kapaliny","text":"Vylijte špinavou vodu a nalijte přibližně 60 ml odpadní kapaliny do odpadní nádoby."},
 ]
 
-MAIN_MENU = {
+WORKER_MENU = {
     "keyboard": [["🧽 Údržba"], ["📦 Příjem zboží"]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
+ADMIN_MENU = {
+    "keyboard": [["🧽 Údržba"], ["📦 Příjem zboží"], ["🔔 Připomenout údržbu"]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+MAIN_MENU = WORKER_MENU
+
 CANCEL_KEYBOARD = {
     "keyboard": [["❌ Zrušit"], ["🚪 Odhlásit"]],
     "resize_keyboard": True,
@@ -182,18 +180,66 @@ def ensure_worksheet(name, headers):
     return ws
 
 def account_by_login(login):
-    # Ignore accidental spaces and letter case in the login entered in Telegram.
     supplied_login = str(login).strip().casefold()
+    admin_login = str(ADMIN_ACCOUNT.get("login", "")).strip().casefold()
+    if admin_login and hmac.compare_digest(admin_login, supplied_login):
+        return {"login": str(ADMIN_ACCOUNT.get("login", "")), "role": "admin", "location": "MeCoffee – správce", "worksheet": ""}
     for account in LOCATION_ACCOUNTS.values():
         if not isinstance(account, dict):
             continue
         configured_login = str(account.get("login", "")).strip().casefold()
         if configured_login and hmac.compare_digest(configured_login, supplied_login):
-            return account
+            return {**account, "role": "worker"}
     return None
 
 def authenticated_account(chat_id):
     return sessions.get(str(chat_id))
+
+def is_admin(chat_id):
+    return (authenticated_account(chat_id) or {}).get("role") == "admin"
+
+def register_notification_recipient(account, chat_id, username):
+    if account.get("role") == "admin":
+        return
+    headers = ["Přihlašovací účet", "Provozovna", "Telegram chat ID", "Telegram uživatel", "Aktualizováno"]
+    ws = ensure_worksheet("Upozornění údržby", headers)
+    rows = ws.get_all_values()
+    login = str(account.get("login", ""))
+    row_number = next((idx for idx, row in enumerate(rows[1:], start=2) if row and row[0] == login), None)
+    values = [login, str(account.get("location", "")), str(chat_id), str(username), datetime.now().strftime("%Y-%m-%d %H:%M")]
+    if row_number:
+        ws.update(f"A{row_number}:E{row_number}", [values], value_input_option="USER_ENTERED")
+    else:
+        ws.append_row(values, value_input_option="USER_ENTERED")
+
+def authenticated_location_names():
+    names = []
+    for account in LOCATION_ACCOUNTS.values():
+        if isinstance(account, dict):
+            location = str(account.get("location", "")).strip()
+            if location and location not in names:
+                names.append(location)
+    return names
+
+def send_maintenance_reminder(chat_id, location_name):
+    if not is_admin(chat_id):
+        send_message(chat_id, "❌ Tuto funkci může používat pouze správce.", WORKER_MENU)
+        return
+    ws = ensure_worksheet("Upozornění údržby", ["Přihlašovací účet", "Provozovna", "Telegram chat ID", "Telegram uživatel", "Aktualizováno"])
+    recipients = [row[2].strip() for row in ws.get_all_values()[1:] if len(row) >= 3 and row[1].strip() == location_name and row[2].strip()]
+    if not recipients:
+        send_message(chat_id, f"⚠️ Pro provozovnu {location_name} zatím není registrován příjemce. Odpovědný pracovník musí spustit bot a přihlásit se svým účtem.")
+        return
+    reminder = "🧽 Připomínka údržby\n\nDnes je potřeba provést důkladné čištění automatu MeCoffee. Po dokončení zaznamenejte údržbu v botu."
+    sent = 0
+    for recipient in dict.fromkeys(recipients):
+        try:
+            response = requests.post(f"{API_URL}/sendMessage", json={"chat_id": recipient, "text": reminder}, timeout=15)
+            response.raise_for_status()
+            sent += 1
+        except Exception:
+            log.exception("Failed to send maintenance reminder")
+    send_message(chat_id, f"📨 Připomínka pro {location_name}: odesláno {sent}/{len(set(recipients))}.", ADMIN_MENU)
 
 def start_login(chat_id):
     sessions.pop(str(chat_id), None)
@@ -206,11 +252,8 @@ def show_menu(chat_id):
     if not account:
         start_login(chat_id)
         return
-    send_message(
-        chat_id,
-        f"MeCoffee Service Bot\nPřihlášená provozovna: {account.get('location', 'neznámá')}\n\nCo potřebujete udělat?",
-        MAIN_MENU,
-    )
+    keyboard = ADMIN_MENU if account.get("role") == "admin" else WORKER_MENU
+    send_message(chat_id, f"MeCoffee Service Bot\nPřihlášená provozovna: {account.get('location', 'neznámá')}\n\nCo potřebujete udělat?", keyboard)
 
 def begin_maintenance(chat_id, username):
     account = authenticated_account(chat_id)
@@ -224,8 +267,8 @@ def begin_maintenance(chat_id, username):
         "step_index": 0,
         "issues": [],
     }
-    user_states[chat_id] = "maintenance_step"
-    send_message(chat_id, "📸 Nejprve vyfoťte automat PŘED údržbou.", CANCEL_KEYBOARD)
+    user_states[chat_id] = "maintenance_photo_exterior_before"
+    send_message(chat_id, "📸 Automat zvenku – PŘED údržbou. Pošlete fotografii automatu zvenku.", CANCEL_KEYBOARD)
 
 def send_current_step(chat_id):
     data = user_data.get(chat_id, {})
@@ -237,6 +280,10 @@ def send_current_step(chat_id):
         ask_ingredient(chat_id)
         return
     step = maintenance_steps[index]
+    if step["key"] == "mixers_photo":
+        user_states[chat_id] = "maintenance_photo_mixers"
+        send_message(chat_id, f"📸 {step['title']}\n\n{step['text']}", CANCEL_KEYBOARD)
+        return
     send_message(chat_id, f"🧽 {step['title']}\n\n{step['text']}", STEP_KEYBOARD)
     send_guide(chat_id, step)
 
@@ -245,7 +292,7 @@ def ask_ingredient(chat_id):
     index = data.get("ingredient_index", 0)
     if index >= len(ingredients):
         user_states[chat_id] = "maintenance_photo_after"
-        send_message(chat_id, "📸 Vyfoťte automat PO údržbě.", CANCEL_KEYBOARD)
+        send_message(chat_id, "📸 Automat zvenku – PO údržbě. Vyfoťte čistý automat zvenku.", CANCEL_KEYBOARD)
         return
     key, label = ingredients[index]
     send_message(chat_id, f"{label}\n\nKolik balení je nyní v automatu po doplnění? Zadejte číslo.", CANCEL_KEYBOARD)
@@ -357,8 +404,9 @@ def save_maintenance(chat_id):
         send_message(chat_id, "❌ U účtu není nastaven list pro report údržby. Kontaktujte správce.")
         return
     headers = [
-        "Date", "User", "Káva", "Mléko", "Čokoláda", "Matcha", "Kelímky S", "Kelímky M", "Kelímky L",
-        "Foto automat před", "Foto stůl před", "Foto automat po", "Foto stůl po", "Provozovna", "Problémy"
+        "Datum", "Uživatel", "Káva", "Mléko", "Čokoláda", "Matcha", "Kelímky S", "Kelímky M", "Kelímky L",
+        "Foto automat před", "Foto stůl před", "Foto vnitřek před", "Foto mixéry čisté",
+        "Foto automat po", "Foto stůl po", "Foto vnitřek po", "Provozovna", "Problémy"
     ]
     ws = ensure_worksheet(sheet_name, headers)
     ws.append_row([
@@ -373,8 +421,11 @@ def save_maintenance(chat_id):
         data.get("cups_l", ""),
         data.get("photo_automat_before", ""),
         data.get("photo_table_before", ""),
+        data.get("photo_inside_before", ""),
+        data.get("photo_mixers_clean", ""),
         data.get("photo_after", ""),
         data.get("photo_table_after", ""),
+        data.get("photo_inside_after", ""),
         account.get("location", ""),
         " | ".join(data.get("issues", [])),
     ])
@@ -394,6 +445,22 @@ def save_maintenance(chat_id):
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
+    if "callback_query" in data:
+        callback = data["callback_query"]
+        callback_chat_id = callback.get("message", {}).get("chat", {}).get("id")
+        callback_data = callback.get("data", "")
+        try:
+            requests.post(f"{API_URL}/answerCallbackQuery", json={"callback_query_id": callback.get("id")}, timeout=10)
+        except Exception:
+            log.warning("Could not answer callback query")
+        if callback_chat_id is not None and callback_data.startswith("remind:"):
+            if not is_admin(callback_chat_id):
+                send_message(callback_chat_id, "❌ Tuto funkci může používat pouze správce.", WORKER_MENU)
+            elif callback_data == "remind:cancel":
+                send_message(callback_chat_id, "Odeslání připomínky zrušeno.", ADMIN_MENU)
+            else:
+                send_maintenance_reminder(callback_chat_id, callback_data[len("remind:"):])
+        return jsonify({"ok": True})
     if "message" not in data:
         return jsonify({"ok": True})
 
@@ -445,8 +512,10 @@ def webhook():
             "login": str(account.get("login", "")),
             "location": str(account.get("location", "")),
             "worksheet": str(account.get("worksheet", "")),
+            "role": str(account.get("role", "worker")),
         }
         sessions[chat_key] = safe_account
+        register_notification_recipient(safe_account, chat_id, username)
         user_data.pop(chat_id, None)
         user_states.pop(chat_id, None)
         # Best-effort deletion so the password is not left visible in the chat.
@@ -467,17 +536,61 @@ def webhook():
     if text == "📦 Příjem zboží":
         start_receipt(chat_id, username)
         return jsonify({"ok": True})
+    if text == "🔔 Připomenout údržbu":
+        if not is_admin(chat_id):
+            send_message(chat_id, "❌ Tuto funkci může používat pouze správce.", WORKER_MENU)
+            return jsonify({"ok": True})
+        locations = authenticated_location_names()
+        if not locations:
+            send_message(chat_id, "⚠️ V LOCATION_ACCOUNTS_JSON nejsou nastaveny provozovny.", ADMIN_MENU)
+            return jsonify({"ok": True})
+        buttons = [[{"text": name, "callback_data": "remind:" + name}] for name in locations]
+        buttons.append([{"text": "Zrušit", "callback_data": "remind:cancel"}])
+        send_message(chat_id, "Vyberte provozovnu, které chcete poslat připomínku údržby:", inline_keyboard=buttons)
+        return jsonify({"ok": True})
     if text == "🚪 Odhlásit":
         sessions.pop(chat_key, None)
         start_login(chat_id)
         return jsonify({"ok": True})
 
-    if state == "maintenance_step":
-        if "photo" in msg and "photo_automat_before" not in user_data.get(chat_id, {}):
-            user_data[chat_id]["photo_automat_before"] = upload_photo(msg["photo"][-1]["file_id"])
-            send_message(chat_id, "📸 Teď vyfoťte pracovní plochu / stůl PŘED údržbou.", CANCEL_KEYBOARD)
-            user_states[chat_id] = "maintenance_photo_table_before"
+    if state == "maintenance_photo_exterior_before":
+        if "photo" not in msg:
+            send_message(chat_id, "❗ Je potřeba poslat fotografii automatu zvenku PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             return jsonify({"ok": True})
+        user_data[chat_id]["photo_automat_before"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_states[chat_id] = "maintenance_photo_table_before"
+        send_message(chat_id, "📸 Pracovní stůl – PŘED údržbou. Pošlete fotografii pracovní plochy.", CANCEL_KEYBOARD)
+        return jsonify({"ok": True})
+
+    if state == "maintenance_photo_table_before":
+        if "photo" not in msg:
+            send_message(chat_id, "❗ Je potřeba poslat fotografii pracovního stolu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
+            return jsonify({"ok": True})
+        user_data[chat_id]["photo_table_before"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_states[chat_id] = "maintenance_photo_inside_before"
+        send_message(chat_id, "📸 Vnitřek automatu – PŘED údržbou. Pošlete fotografii vnitřku automatu.", CANCEL_KEYBOARD)
+        return jsonify({"ok": True})
+
+    if state == "maintenance_photo_inside_before":
+        if "photo" not in msg:
+            send_message(chat_id, "❗ Je potřeba poslat fotografii vnitřku automatu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
+            return jsonify({"ok": True})
+        user_data[chat_id]["photo_inside_before"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_states[chat_id] = "maintenance_step"
+        send_current_step(chat_id)
+        return jsonify({"ok": True})
+
+    if state == "maintenance_photo_mixers":
+        if "photo" not in msg:
+            send_message(chat_id, "❗ Pošlete fotografii čistých mixérů, abyste mohli pokračovat.", CANCEL_KEYBOARD)
+            return jsonify({"ok": True})
+        user_data[chat_id]["photo_mixers_clean"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
+        user_states[chat_id] = "maintenance_step"
+        send_current_step(chat_id)
+        return jsonify({"ok": True})
+
+    if state == "maintenance_step":
         if text == "⚠️ Nahlásit problém":
             log_issue(chat_id)
             return jsonify({"ok": True})
@@ -486,12 +599,6 @@ def webhook():
             send_current_step(chat_id)
             return jsonify({"ok": True})
         send_message(chat_id, "Dokončete aktuální krok tlačítkem „✅ Hotovo – další krok“, nebo nahlaste problém.", STEP_KEYBOARD)
-        return jsonify({"ok": True})
-
-    if state == "maintenance_photo_table_before" and "photo" in msg:
-        user_data[chat_id]["photo_table_before"] = upload_photo(msg["photo"][-1]["file_id"])
-        user_states[chat_id] = "maintenance_step"
-        send_current_step(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_issue":
@@ -514,15 +621,24 @@ def webhook():
         ask_ingredient(chat_id)
         return jsonify({"ok": True})
 
-    if state == "maintenance_photo_after" and "photo" in msg:
-        user_data[chat_id]["photo_after"] = upload_photo(msg["photo"][-1]["file_id"])
-        user_states[chat_id] = "maintenance_photo_table_after"
-        send_message(chat_id, "📸 Vyfoťte pracovní plochu / stůl PO údržbě.", CANCEL_KEYBOARD)
-        return jsonify({"ok": True})
-
-    if state == "maintenance_photo_table_after" and "photo" in msg:
-        user_data[chat_id]["photo_table_after"] = upload_photo(msg["photo"][-1]["file_id"])
-        save_maintenance(chat_id)
+    if state in ("maintenance_photo_after", "maintenance_photo_table_after", "maintenance_photo_inside_after"):
+        photo_states = {
+            "maintenance_photo_after": ("photo_after", "📸 Automat zvenku – PO údržbě. Vyfoťte čistý automat zvenku.", "❗ Pošlete fotografii čistého automatu zvenku PO údržbě."),
+            "maintenance_photo_table_after": ("photo_table_after", "📸 Pracovní stůl – PO údržbě. Vyfoťte čistý pracovní stůl.", "❗ Pošlete fotografii čistého pracovního stolu PO údržbě."),
+            "maintenance_photo_inside_after": ("photo_inside_after", "📸 Vnitřek automatu – PO údržbě. Vyfoťte čistý vnitřek automatu.", "❗ Pošlete fotografii čistého vnitřku automatu PO údržbě."),
+        }
+        if "photo" not in msg:
+            send_message(chat_id, photo_states[state][2], CANCEL_KEYBOARD)
+            return jsonify({"ok": True})
+        user_data[chat_id][photo_states[state][0]] = upload_photo(msg["photo"][-1]["file_id"])
+        if state == "maintenance_photo_after":
+            user_states[chat_id] = "maintenance_photo_table_after"
+            send_message(chat_id, photo_states["maintenance_photo_table_after"][1], CANCEL_KEYBOARD)
+        elif state == "maintenance_photo_table_after":
+            user_states[chat_id] = "maintenance_photo_inside_after"
+            send_message(chat_id, photo_states["maintenance_photo_inside_after"][1], CANCEL_KEYBOARD)
+        else:
+            save_maintenance(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_field_quantity":
