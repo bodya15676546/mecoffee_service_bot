@@ -116,7 +116,7 @@ WORKER_MENU = {
     "is_persistent": True,
 }
 ADMIN_MENU = {
-    "keyboard": [["🧽 Údržba"], ["📦 Příjem zboží"], ["🔔 Připomenout údržbu"]],
+    "keyboard": [["🔔 Připomenout údržbu"]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
