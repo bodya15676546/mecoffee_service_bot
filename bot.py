@@ -323,7 +323,11 @@ def finish_receipt(chat_id):
         user_states.pop(chat_id, None)
         user_data.pop(chat_id, None)
         return
-    ws = ensure_worksheet("Příjem zboží", ["Datum", "Provozovna", "Přihlašovací účet", "Telegram uživatel", "Produkt", "Množství", "Jednotka", "Poznámka"])
+    receipt_headers = ["Datum", "Provozovna", "Přihlašovací účet", "Telegram uživatel", "Produkt", "Množství", "Jednotka", "Poznámka"]
+    ws = ensure_worksheet("Příjem zboží", receipt_headers)
+    existing_headers = ws.row_values(1)
+    if len(existing_headers) < len(receipt_headers):
+        ws.update_cell(1, len(receipt_headers), receipt_headers[-1])
     rows = []
     for item in data["receipt_items"]:
         rows.append([
