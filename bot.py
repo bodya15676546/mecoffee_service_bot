@@ -99,7 +99,7 @@ RECEIPT_FIELDS = [
 ]
 
 maintenance_steps = [
-    {"key":"refill","title":"1 – Doplnění zásob","text":"Doplňte potřebné ingredience a spotřební materiál. Po údržbě zadáte aktuální počet balení v automatu."},
+    {"key":"refill","title":"1 – Doplnění zásob","text":"Doplňte potřebné ingredience a spotřební materiál. U každé doplněné ingredience zvažte množství v gramech a zadejte ho do servisního menu automatu."},
     {"key":"mixers","title":"2 – Vyjmutí a umytí mixérů","text":"Vyjměte mixéry a umyjte je přípravkem Sanitol podle pokynů výrobce."},
     {"key":"filters","title":"3 – Pěnové filtry","text":"Zkontrolujte a vyčistěte pěnové filtry na výdechu každého mixéru."},
     {"key":"reinstall","title":"4 – Nasazení a proplach mixérů","text":"Vraťte mixéry na místo, připojte hadičky suchých ingrediencí a v servisním menu spusťte proplach mixérů."},
