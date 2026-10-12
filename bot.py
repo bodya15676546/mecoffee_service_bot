@@ -190,7 +190,7 @@ def account_by_login(login):
     supplied_login = str(login).strip().casefold()
     admin_login = str(ADMIN_ACCOUNT.get("login", "")).strip().casefold()
     if admin_login and hmac.compare_digest(admin_login, supplied_login):
-        return {"login": str(ADMIN_ACCOUNT.get("login", "")), "role": "admin", "location": "MeCoffee – správce", "worksheet": ""}
+        return {"login": str(ADMIN_ACCOUNT.get("login", "")), "password": str(ADMIN_ACCOUNT.get("password", "")), "role": "admin", "location": "MeCoffee – správce", "worksheet": ""}
     for account in LOCATION_ACCOUNTS.values():
         if not isinstance(account, dict):
             continue
