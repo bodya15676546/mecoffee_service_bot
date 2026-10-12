@@ -77,7 +77,7 @@ except json.JSONDecodeError:
 
 user_states = {}
 user_data = {}
-sessions = {}  # chat_id -> authenticated location account; re-login required after restart
+sessions = {}  # chat_id -> authenticated account, cached in memory
 
 ingredients = [
     ("coffee", "☕ Káva"), ("milk", "🥛 Mléko"), ("chocolate", "🍫 Čokoláda"),
@@ -199,10 +199,68 @@ def account_by_login(login):
             return {**account, "role": "worker"}
     return None
 
+AUTH_SESSIONS_SHEET = "Trvalá přihlášení"
+AUTH_SESSION_HEADERS = ["Telegram chat ID", "Přihlašovací účet", "Telegram uživatel", "Přihlášeno"]
+
+def save_auth_session(account, chat_id, username):
+    try:
+        ws = ensure_worksheet(AUTH_SESSIONS_SHEET, AUTH_SESSION_HEADERS)
+        rows = ws.get_all_values()
+        row_number = next((idx for idx, row in enumerate(rows[1:], start=2) if row and row[0] == str(chat_id)), None)
+        values = [str(chat_id), str(account.get("login", "")), str(username), datetime.now().strftime("%Y-%m-%d %H:%M")]
+        if row_number:
+            ws.update(f"A{row_number}:D{row_number}", [values], value_input_option="RAW")
+        else:
+            ws.append_row(values, value_input_option="RAW")
+    except Exception:
+        log.exception("Could not save persistent login")
+
+def delete_auth_session(chat_id):
+    try:
+        ws = spreadsheet.worksheet(AUTH_SESSIONS_SHEET)
+        rows = ws.get_all_values()
+        for idx, row in enumerate(rows[1:], start=2):
+            if row and row[0] == str(chat_id):
+                ws.delete_rows(idx)
+                break
+    except gspread.WorksheetNotFound:
+        pass
+    except Exception:
+        log.exception("Could not delete persistent login")
+
+def restore_auth_session(chat_id):
+    chat_key = str(chat_id)
+    if chat_key in sessions:
+        return sessions[chat_key]
+    try:
+        ws = spreadsheet.worksheet(AUTH_SESSIONS_SHEET)
+        rows = ws.get_all_values()
+        row = next((row for row in rows[1:] if row and row[0] == chat_key), None)
+        if not row or len(row) < 2:
+            return None
+        account = account_by_login(row[1])
+        if not account:
+            delete_auth_session(chat_id)
+            return None
+        safe_account = {
+            "login": str(account.get("login", "")),
+            "location": str(account.get("location", "")),
+            "worksheet": str(account.get("worksheet", "")),
+            "role": str(account.get("role", "worker")),
+        }
+        sessions[chat_key] = safe_account
+        return safe_account
+    except gspread.WorksheetNotFound:
+        return None
+    except Exception:
+        log.exception("Could not restore persistent login")
+        return None
+
 def authenticated_account(chat_id):
     return sessions.get(str(chat_id))
 
 def is_admin(chat_id):
+
     return (authenticated_account(chat_id) or {}).get("role") == "admin"
 
 def register_notification_recipient(account, chat_id, username):
@@ -251,8 +309,10 @@ def send_maintenance_reminder(chat_id, location_name):
             log.exception("Failed to send maintenance reminder")
     send_message(chat_id, f"📨 Připomínka pro {location_name}: odesláno {sent}/{len(set(recipients))}.", ADMIN_MENU)
 
-def start_login(chat_id):
+def start_login(chat_id, forget_saved=False):
     sessions.pop(str(chat_id), None)
+    if forget_saved:
+        delete_auth_session(chat_id)
     user_data.pop(chat_id, None)
     user_states[chat_id] = "login"
     send_message(chat_id, "Přihlášení do MeCoffee Service Bot\n\nZadejte přihlašovací jméno vaší provozovny:", CANCEL_KEYBOARD)
@@ -459,6 +519,8 @@ def webhook():
         callback = data["callback_query"]
         callback_chat_id = callback.get("message", {}).get("chat", {}).get("id")
         callback_data = callback.get("data", "")
+        if callback_chat_id is not None:
+            restore_auth_session(callback_chat_id)
         try:
             requests.post(f"{API_URL}/answerCallbackQuery", json={"callback_query_id": callback.get("id")}, timeout=10)
         except Exception:
@@ -484,11 +546,18 @@ def webhook():
     text = msg.get("text", "").strip()
     state = user_states.get(chat_id)
 
-    if text in ("/start", "/login"):
-        start_login(chat_id)
+    if text == "/start":
+        if restore_auth_session(chat_id):
+            show_menu(chat_id)
+        else:
+            start_login(chat_id)
+        return jsonify({"ok": True})
+    if text == "/login":
+        start_login(chat_id, forget_saved=True)
         return jsonify({"ok": True})
     if text == "🚪 Odhlásit":
         sessions.pop(chat_key, None)
+        delete_auth_session(chat_id)
         user_states.pop(chat_id, None)
         user_data.pop(chat_id, None)
         send_message(chat_id, "Byli jste odhlášeni.")
@@ -525,6 +594,7 @@ def webhook():
             "role": str(account.get("role", "worker")),
         }
         sessions[chat_key] = safe_account
+        save_auth_session(safe_account, chat_id, username)
         register_notification_recipient(safe_account, chat_id, username)
         user_data.pop(chat_id, None)
         user_states.pop(chat_id, None)
@@ -536,7 +606,7 @@ def webhook():
         show_menu(chat_id)
         return jsonify({"ok": True})
 
-    if not authenticated_account(chat_id):
+    if not authenticated_account(chat_id) and not restore_auth_session(chat_id):
         start_login(chat_id)
         return jsonify({"ok": True})
 
