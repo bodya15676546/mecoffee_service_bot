@@ -80,6 +80,22 @@ ingredients = [
     ("cups_l", "🥤 Kelímky L"),
 ]
 
+# Fixed fields collected during goods receipt.
+RECEIPT_FIELDS = [
+    ("cups_340", "Kelímky 340 ml", "ks"),
+    ("cups_250", "Kelímky 250 ml", "ks"),
+    ("cups_110", "Kelímky 110 ml", "ks"),
+    ("lids_80", "Víčka 80 mm", "ks"),
+    ("lids_90", "Víčka 90 mm", "ks"),
+    ("stirrers", "Míchátka", "ks"),
+    ("syrup", "Sirup", "ks"),
+    ("matcha", "Matcha", "kg"),
+    ("milk", "Mléko", "kg"),
+    ("chocolate", "Čokoláda", "kg"),
+    ("sugar", "Cukr", "kg"),
+    ("coffee", "Káva", "kg"),
+]
+
 maintenance_steps = [
     {
         "key": "waste",
@@ -243,10 +259,61 @@ def start_receipt(chat_id, username):
         "account": account,
         "telegram_user": username,
         "receipt_items": [],
+        "receipt_index": 0,
         "receipt_started": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
-    user_states[chat_id] = "receipt_product"
-    send_message(chat_id, "📦 Příjem zboží\n\nZadejte název produktu:", CANCEL_KEYBOARD)
+    ask_receipt_field(chat_id)
+
+def ask_receipt_field(chat_id):
+    data = user_data.get(chat_id, {})
+    index = data.get("receipt_index", 0)
+    if index >= len(RECEIPT_FIELDS):
+        user_states[chat_id] = "receipt_more"
+        send_message(
+            chat_id,
+            "✅ Základní položky příjmu jsou vyplněny.\n\nMůžete přidat další produkt nebo příjem dokončit.",
+            RECEIPT_KEYBOARD,
+        )
+        return
+    _, label, unit = RECEIPT_FIELDS[index]
+    user_states[chat_id] = "receipt_field_quantity"
+    send_message(
+        chat_id,
+        f"📦 {label}\n\nZadejte přijaté množství v {unit}. Pokud tuto položku nepřijímáte, zadejte 0.",
+        CANCEL_KEYBOARD,
+    )
+
+def save_receipt_field_quantity(chat_id, text):
+    data = user_data[chat_id]
+    index = data.get("receipt_index", 0)
+    key, label, unit = RECEIPT_FIELDS[index]
+    try:
+        quantity = float(text.replace(",", "."))
+        if quantity < 0:
+            raise ValueError
+    except ValueError:
+        send_message(chat_id, "Zadejte nezáporné číslo, například 2 nebo 1,5. Zadejte 0, pokud položku nepřijímáte.")
+        return
+    if quantity > 0:
+        data["current_item"] = {"product": label, "quantity": text, "unit": unit, "note": ""}
+        if key == "syrup":
+            user_states[chat_id] = "receipt_syrup_note"
+            send_message(chat_id, "Jaký sirup jste přijali? Uveďte příchuť nebo druh, například karamel, vanilka či pistácie.", CANCEL_KEYBOARD)
+            return
+        data["receipt_items"].append(data.pop("current_item"))
+    data["receipt_index"] = index + 1
+    ask_receipt_field(chat_id)
+
+def save_receipt_syrup_note(chat_id, text):
+    data = user_data[chat_id]
+    note = text.strip()
+    if not note:
+        send_message(chat_id, "Uveďte příchuť nebo druh sirupu, například karamel či vanilka.")
+        return
+    data["current_item"]["note"] = note
+    data["receipt_items"].append(data.pop("current_item"))
+    data["receipt_index"] = data.get("receipt_index", 0) + 1
+    ask_receipt_field(chat_id)
 
 def finish_receipt(chat_id):
     data = user_data.get(chat_id, {})
@@ -256,7 +323,7 @@ def finish_receipt(chat_id):
         user_states.pop(chat_id, None)
         user_data.pop(chat_id, None)
         return
-    ws = ensure_worksheet("Příjem zboží", ["Datum", "Provozovna", "Přihlašovací účet", "Telegram uživatel", "Produkt", "Množství", "Jednotka"])
+    ws = ensure_worksheet("Příjem zboží", ["Datum", "Provozovna", "Přihlašovací účet", "Telegram uživatel", "Produkt", "Množství", "Jednotka", "Poznámka"])
     rows = []
     for item in data["receipt_items"]:
         rows.append([
@@ -267,6 +334,7 @@ def finish_receipt(chat_id):
             item["product"],
             item["quantity"],
             item["unit"],
+            item.get("note", ""),
         ])
     ws.append_rows(rows, value_input_option="USER_ENTERED")
     user_states.pop(chat_id, None)
@@ -453,11 +521,19 @@ def webhook():
         save_maintenance(chat_id)
         return jsonify({"ok": True})
 
+    if state == "receipt_field_quantity":
+        save_receipt_field_quantity(chat_id, text)
+        return jsonify({"ok": True})
+
+    if state == "receipt_syrup_note":
+        save_receipt_syrup_note(chat_id, text)
+        return jsonify({"ok": True})
+
     if state == "receipt_product":
         if not text:
             send_message(chat_id, "Zadejte název produktu jako text.")
             return jsonify({"ok": True})
-        user_data[chat_id]["current_item"] = {"product": text}
+        user_data[chat_id]["current_item"] = {"product": text, "note": ""}
         user_states[chat_id] = "receipt_quantity"
         send_message(chat_id, f"Produkt: {text}\n\nZadejte množství (např. 10 nebo 1,5):", CANCEL_KEYBOARD)
         return jsonify({"ok": True})
@@ -481,6 +557,7 @@ def webhook():
             send_message(chat_id, "Vyberte jednu z nabízených jednotek.", UNIT_KEYBOARD)
             return jsonify({"ok": True})
         user_data[chat_id]["current_item"]["unit"] = text
+        user_data[chat_id]["current_item"].setdefault("note", "")
         user_data[chat_id]["receipt_items"].append(user_data[chat_id].pop("current_item"))
         user_states[chat_id] = "receipt_more"
         count = len(user_data[chat_id]["receipt_items"])
