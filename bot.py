@@ -175,8 +175,15 @@ def ensure_worksheet(name, headers):
         ws = spreadsheet.add_worksheet(title=name, rows=1000, cols=max(len(headers), 10))
         ws.append_row(headers)
         return ws
-    if not ws.row_values(1):
+    existing_headers = ws.row_values(1)
+    if not existing_headers:
         ws.append_row(headers)
+    elif existing_headers != headers:
+        # Keep existing report rows, but align the header row with the current report format.
+        if ws.col_count < len(headers):
+            ws.add_cols(len(headers) - ws.col_count)
+        end_col = chr(64 + len(headers))
+        ws.update(f"A1:{end_col}1", [headers], value_input_option="RAW")
     return ws
 
 def account_by_login(login):
@@ -201,16 +208,19 @@ def is_admin(chat_id):
 def register_notification_recipient(account, chat_id, username):
     if account.get("role") == "admin":
         return
-    headers = ["Přihlašovací účet", "Provozovna", "Telegram chat ID", "Telegram uživatel", "Aktualizováno"]
-    ws = ensure_worksheet("Upozornění údržby", headers)
-    rows = ws.get_all_values()
-    login = str(account.get("login", ""))
-    row_number = next((idx for idx, row in enumerate(rows[1:], start=2) if row and row[0] == login), None)
-    values = [login, str(account.get("location", "")), str(chat_id), str(username), datetime.now().strftime("%Y-%m-%d %H:%M")]
-    if row_number:
-        ws.update(f"A{row_number}:E{row_number}", [values], value_input_option="USER_ENTERED")
-    else:
-        ws.append_row(values, value_input_option="USER_ENTERED")
+    try:
+        headers = ["Přihlašovací účet", "Provozovna", "Telegram chat ID", "Telegram uživatel", "Aktualizováno"]
+        ws = ensure_worksheet("Upozornění údržby", headers)
+        rows = ws.get_all_values()
+        login = str(account.get("login", ""))
+        row_number = next((idx for idx, row in enumerate(rows[1:], start=2) if row and row[0] == login), None)
+        values = [login, str(account.get("location", "")), str(chat_id), str(username), datetime.now().strftime("%Y-%m-%d %H:%M")]
+        if row_number:
+            ws.update(f"A{row_number}:E{row_number}", [values], value_input_option="USER_ENTERED")
+        else:
+            ws.append_row(values, value_input_option="USER_ENTERED")
+    except Exception:
+        log.exception("Could not register maintenance reminder recipient")
 
 def authenticated_location_names():
     names = []
