@@ -86,7 +86,8 @@ user_data = {}
 sessions = {}  # chat_id -> authenticated account, cached in memory
 
 INVENTORY_PRODUCTS = [("milk", "Milk 500g", 500), ("chocolate", "Chokolate 1000g", 1000), ("matcha", "Matcha 1000g", 1000), ("coffee", "Cofffee 1000g", 1000), ("cups_l", "Cups L 50ks", 50), ("cups_m", "Cups M 50ks", 50), ("cups_s", "Cups S 50ks", 50), ("lids_l", "Lids L 100ks", 100), ("lids_m", "Lids M 100ks", 100)]
-ingredients = [("coffee", "☕ Káva", 1000, "g"), ("milk", "🥛 Mléko", 500, "g"), ("chocolate", "🍫 Čokoláda", 1000, "g"), ("matcha", "🍵 Matcha", 1000, "g"), ("cups_l", "🥤 Kelímky L", 50, "ks"), ("cups_m", "🥤 Kelímky M", 50, "ks"), ("cups_s", "🥤 Kelímky S", 50, "ks"), ("lids_l", "🧢 Víčka L", 100, "ks"), ("lids_m", "🧢 Víčka M", 100, "ks")]
+ingredients = [("coffee", "☕ Káva", 1000, "g"), ("milk", "🥛 Mléko", 500, "g"), ("chocolate", "🍫 Čokoláda", 1000, "g"), ("matcha", "🍵 Matcha", 1000, "g")]
+STOCKTAKE_ITEMS = [("cups_l", "Kelímky L"), ("cups_m", "Kelímky M"), ("cups_s", "Kelímky S"), ("lids_l", "Víčka L"), ("lids_m", "Víčka M")]
 INVENTORY_HEADERS = ["Datum", "Sklad"] + [p[1] for p in INVENTORY_PRODUCTS]
 
 RECEIPT_FIELDS = [
@@ -192,21 +193,54 @@ def ensure_worksheet(name, headers, book=None):
         ws.update(f"A1:{end_col}1", [headers], value_input_option="RAW")
     return ws
 
+def resolve_inventory_warehouse(account):
+    location = str((account or {}).get("location", "")).casefold()
+    if "rakovník" in location or "rakovnik" in location:
+        return "Rakovnik"
+    if "hrádek" in location or "hradek" in location:
+        return "Hradek u Rokycan"
+    if "železný brod" in location or "zelezny brod" in location:
+        raise ValueError("V přehledu zatím není samostatný sklad pro Železný Brod.")
+    return "Centralni sklad"
+
 def append_inventory_movement(sheet_name, account, quantities, movement_date=None):
     if inventory_spreadsheet is None:
         raise RuntimeError("Inventární tabulka není dostupná; zkontrolujte sdílení a INVENTORY_SPREADSHEET_ID.")
-    location = str((account or {}).get("location", "")).casefold()
-    if "rakovník" in location or "rakovnik" in location:
-        warehouse = "Rakovnik"
-    elif "hrádek" in location or "hradek" in location:
-        warehouse = "Hradek u Rokycan"
-    elif "železný brod" in location or "zelezny brod" in location:
-        raise ValueError("V přehledu zatím není samostatný sklad pro Železný Brod.")
-    else:
-        warehouse = "Centralni sklad"
+    warehouse = resolve_inventory_warehouse(account)
     ws = ensure_worksheet(sheet_name, INVENTORY_HEADERS, book=inventory_spreadsheet)
     values = [float(quantities.get(key, 0) or 0) for key, _name, _pack in INVENTORY_PRODUCTS]
     ws.append_row([movement_date or datetime.now().strftime("%Y-%m-%d %H:%M"), warehouse] + values, value_input_option="USER_ENTERED")
+
+def current_inventory_quantity(warehouse, product_key):
+    if inventory_spreadsheet is None:
+        raise RuntimeError("Inventární tabulka není dostupná.")
+    ws = inventory_spreadsheet.worksheet("Přehled")
+    headers = ws.row_values(1)
+    rows = ws.get_all_values()
+    product_name = next(name for key, name, _pack in INVENTORY_PRODUCTS if key == product_key)
+    if product_name not in headers:
+        raise ValueError(f"V listu Přehled chybí sloupec {product_name}.")
+    product_col = headers.index(product_name)
+    warehouse_row = next((row for row in rows[1:] if row and row[0].strip() == warehouse), None)
+    if not warehouse_row:
+        raise ValueError(f"V listu Přehled chybí sklad {warehouse}.")
+    raw = warehouse_row[product_col] if product_col < len(warehouse_row) else "0"
+    return float(str(raw or "0").replace(",", "."))
+
+def save_stocktake_adjustment(account, stocktake):
+    warehouse = resolve_inventory_warehouse(account)
+    deltas = {}
+    for key, _label in STOCKTAKE_ITEMS:
+        counted = float(stocktake[key])
+        current = current_inventory_quantity(warehouse, key)
+        deltas[key] = counted - current
+    receipts = {key: delta for key, delta in deltas.items() if delta > 0}
+    issues = {key: -delta for key, delta in deltas.items() if delta < 0}
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if receipts:
+        append_inventory_movement("Příjem zboží", account, receipts, stamp)
+    if issues:
+        append_inventory_movement("Výdej zboží", account, issues, stamp)
 
 def account_by_login(login):
     supplied_login = str(login).strip().casefold()
@@ -384,16 +418,31 @@ def ask_ingredient(chat_id):
     if index >= len(ingredients):
         try:
             append_inventory_movement("Výdej zboží", data.get("account", {}), data.get("refill_quantities", {}), data.get("started_at"))
-            send_message(chat_id, "✅ Doplněná množství byla zapsána do listu Výdej zboží.", CANCEL_KEYBOARD)
+            send_message(chat_id, "✅ Spotřeba ingrediencí byla zapsána do listu Výdej zboží.", CANCEL_KEYBOARD)
         except Exception as exc:
             log.exception("Could not write maintenance consumption to inventory sheet")
-            send_message(chat_id, f"⚠️ Zápis do skladu se nezdařil: {exc}", CANCEL_KEYBOARD)
+            send_message(chat_id, f"⚠️ Zápis spotřeby ingrediencí se nezdařil: {exc}", CANCEL_KEYBOARD)
         data["step_index"] = 1
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
         return
     key, label, pack_size, unit = ingredients[index]
     send_message(chat_id, f"{label}\n\nKolik jste skutečně doplnili do automatu? Zadejte množství v {unit} (např. {pack_size} nebo 0). Pokud jste tuto položku nedoplňovali, zadejte 0.", CANCEL_KEYBOARD)
+
+def ask_stocktake_item(chat_id):
+    data = user_data.get(chat_id, {})
+    index = data.get("stocktake_index", 0)
+    if index >= len(STOCKTAKE_ITEMS):
+        try:
+            save_stocktake_adjustment(data.get("account", {}), data.get("stocktake", {}))
+            send_message(chat_id, "✅ Zůstatek kelímků a víček byl aktualizován podle inventury.", CANCEL_KEYBOARD)
+        except Exception as exc:
+            log.exception("Could not save cup/lid stocktake")
+            send_message(chat_id, f"⚠️ Nepodařilo se aktualizovat sklad podle inventury: {exc}", CANCEL_KEYBOARD)
+        save_maintenance(chat_id)
+        return
+    key, label = STOCKTAKE_ITEMS[index]
+    send_message(chat_id, f"📦 Inventura skladu – {label}\n\nKolik balení nyní zbývá na skladě? Zadejte počet balení (např. 3 nebo 0).", CANCEL_KEYBOARD)
 
 def start_receipt(chat_id, username):
     account = authenticated_account(chat_id)
@@ -747,12 +796,18 @@ def webhook():
         ask_ingredient(chat_id)
         return jsonify({"ok": True})
 
-    if state == "maintenance_photo_table_after":
-        if "photo" not in msg:
-            send_message(chat_id, "❗ Pošlete fotografii čistého stolu PO údržbě.", CANCEL_KEYBOARD)
+    if state == "maintenance_stocktake":
+        key, label = STOCKTAKE_ITEMS[user_data[chat_id]["stocktake_index"]]
+        try:
+            quantity = float(text.replace(",", "."))
+            if quantity < 0:
+                raise ValueError
+        except ValueError:
+            send_message(chat_id, "Zadejte nezáporný počet balení, například 3 nebo 0.", CANCEL_KEYBOARD)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_table_after"] = upload_photo(msg["photo"][-1]["file_id"])
-        save_maintenance(chat_id)
+        user_data[chat_id]["stocktake"][key] = quantity
+        user_data[chat_id]["stocktake_index"] += 1
+        ask_stocktake_item(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_field_quantity":
