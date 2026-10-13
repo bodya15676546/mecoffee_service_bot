@@ -16,6 +16,7 @@ log = logging.getLogger("mecoffee-bot")
 TOKEN = os.environ.get("BOT_TOKEN", "")
 API_URL = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else ""
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Mecoffee_Service_Reports")
+INVENTORY_SPREADSHEET_ID = os.environ.get("INVENTORY_SPREADSHEET_ID", "1e-Cd3tr0Xm5iukhd-RUDIdUqSr3_nPuiVagO3Hrc_G0")
 
 if not TOKEN:
     log.warning("BOT_TOKEN is not configured")
@@ -33,6 +34,11 @@ credentials = ServiceAccountCredentials.from_json_keyfile_dict(
 )
 gc = gspread.authorize(credentials)
 spreadsheet = gc.open(SPREADSHEET_NAME)
+inventory_spreadsheet = None
+try:
+    inventory_spreadsheet = gc.open_by_key(INVENTORY_SPREADSHEET_ID) if INVENTORY_SPREADSHEET_ID else None
+except Exception:
+    log.exception("Inventory spreadsheet unavailable; stock movements will not be recorded")
 app = Flask(__name__)
 
 # Configure these accounts in the hosting provider's environment variables.
@@ -79,10 +85,9 @@ user_states = {}
 user_data = {}
 sessions = {}  # chat_id -> authenticated account, cached in memory
 
-ingredients = [
-    ("coffee", "☕ Káva"), ("milk", "🥛 Mléko"), ("chocolate", "🍫 Čokoláda"),
-    ("matcha", "🍵 Matcha"), ("cups_s", "🥤 Kelímky S"), ("cups_m", "🥤 Kelímky M"), ("cups_l", "🥤 Kelímky L"),
-]
+INVENTORY_PRODUCTS = [("milk", "Milk 500g", 500), ("chocolate", "Chokolate 1000g", 1000), ("matcha", "Matcha 1000g", 1000), ("coffee", "Cofffee 1000g", 1000), ("cups_l", "Cups L 50ks", 50), ("cups_m", "Cups M 50ks", 50), ("cups_s", "Cups S 50ks", 50), ("lids_l", "Lids L 100ks", 100), ("lids_m", "Lids M 100ks", 100)]
+ingredients = [("coffee", "☕ Káva", 1000, "g"), ("milk", "🥛 Mléko", 500, "g"), ("chocolate", "🍫 Čokoláda", 1000, "g"), ("matcha", "🍵 Matcha", 1000, "g"), ("cups_l", "🥤 Kelímky L", 50, "ks"), ("cups_m", "🥤 Kelímky M", 50, "ks"), ("cups_s", "🥤 Kelímky S", 50, "ks"), ("lids_l", "🧢 Víčka L", 100, "ks"), ("lids_m", "🧢 Víčka M", 100, "ks")]
+INVENTORY_HEADERS = ["Datum", "Sklad"] + [p[1] for p in INVENTORY_PRODUCTS]
 
 RECEIPT_FIELDS = [
     ("cups_340", "Kelímky 340 ml (balení po 50 ks)", "balení"),
@@ -99,14 +104,14 @@ RECEIPT_FIELDS = [
 ]
 
 maintenance_steps = [
-    {"key":"refill","title":"1 – Doplnění zásob","text":"Doplňte potřebné ingredience a spotřební materiál. U každé doplněné ingredience zvažte množství v gramech a zadejte ho do servisního menu automatu."},
+    {"key":"refill","title":"1 – Doplnění zásob","text":"Doplňte potřebné ingredience a spotřební materiál. Potom do bota zadejte skutečné množství, které jste doplnili do automatu: gramy ingrediencí a kusy kelímků či víček. Nic nevážte."},
     {"key":"mixers","title":"2 – Vyjmutí a umytí mixérů","text":"Vyjměte mixéry a umyjte je přípravkem Sanitol podle pokynů výrobce."},
     {"key":"filters","title":"3 – Pěnové filtry","text":"Zkontrolujte a vyčistěte pěnové filtry na výdechu každého mixéru."},
     {"key":"reinstall","title":"4 – Nasazení a proplach mixérů","text":"Vraťte mixéry na místo, připojte hadičky a otočte nosiče suchých ingrediencí zpět dolů. V servisním menu spusťte proplach mixérů."},
     {"key":"mixers_photo","title":"5 – Fotografie čistých mixérů","text":"Vyfoťte čisté mixéry po umytí a opětovném nasazení."},
     {"key":"brewer","title":"6 – Důkladné čištění spařovací jednotky","text":"Spusťte „Důkladné čištění“, nastavte dobu působení tablety na 8 minut, vložte tabletu do spařovací jednotky a zavřete dvířka."},
-    {"key":"during_wait","title":"7 – Úklid během 8minutového čekání","text":"Očistěte stůl přípravkem Sanitol, doplňte cukr, opláchněte pumpičky/dávkovače sirupů a ponořte sirupové trysky na pár minut do vroucí vody."},
-    {"key":"before_drain","title":"8 – Kontrola vnitřku před vylitím vody","text":"Odstraňte rozsypaný prášek a další nečistoty uvnitř automatu. Otřete vnější povrch spařovací jednotky, aby na něm nezůstaly zbytky kávy."},
+    {"key":"during_wait","title":"7 – Úklid během 8minutového čekání","text":"Očistěte stůl přípravkem Sanitol, doplňte cukr a míchátka, otřete pumpičky/dávkovače sirupů a ponořte sirupové trysky na pár vteřin do vroucí vody."},
+    {"key":"before_drain","title":"8 – Kontrola vnitřku automatu","text":"Odstraňte rozsypaný prášek a další nečistoty uvnitř automatu. Otřete vnější povrch spařovací jednotky. Jedním kliknutím spusťte program „Úklid“, aby se celý kávovar propláchl."},
     {"key":"drain","title":"9 – Vylití vody a odpadní kapaliny","text":"Vylijte špinavou vodu a nalijte přibližně 60 ml odpadní kapaliny do odpadní nádoby."},
 ]
 
@@ -168,11 +173,12 @@ def upload_photo(file_id):
     file_path = response.json()["result"]["file_path"]
     return f"https://api.telegram.org/file/bot{TOKEN}/{quote(file_path)}"
 
-def ensure_worksheet(name, headers):
+def ensure_worksheet(name, headers, book=None):
+    book = book or spreadsheet
     try:
-        ws = spreadsheet.worksheet(name)
+        ws = book.worksheet(name)
     except gspread.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title=name, rows=1000, cols=max(len(headers), 10))
+        ws = book.add_worksheet(title=name, rows=1000, cols=max(len(headers), 10))
         ws.append_row(headers)
         return ws
     existing_headers = ws.row_values(1)
@@ -185,6 +191,22 @@ def ensure_worksheet(name, headers):
         end_col = chr(64 + len(headers))
         ws.update(f"A1:{end_col}1", [headers], value_input_option="RAW")
     return ws
+
+def append_inventory_movement(sheet_name, account, quantities, movement_date=None):
+    if inventory_spreadsheet is None:
+        raise RuntimeError("Inventární tabulka není dostupná; zkontrolujte sdílení a INVENTORY_SPREADSHEET_ID.")
+    location = str((account or {}).get("location", "")).casefold()
+    if "rakovník" in location or "rakovnik" in location:
+        warehouse = "Rakovnik"
+    elif "hrádek" in location or "hradek" in location:
+        warehouse = "Hradek u Rokycan"
+    elif "železný brod" in location or "zelezny brod" in location:
+        raise ValueError("V přehledu zatím není samostatný sklad pro Železný Brod.")
+    else:
+        warehouse = "Centralni sklad"
+    ws = ensure_worksheet(sheet_name, INVENTORY_HEADERS, book=inventory_spreadsheet)
+    values = [float(quantities.get(key, 0) or 0) for key, _name, _pack in INVENTORY_PRODUCTS]
+    ws.append_row([movement_date or datetime.now().strftime("%Y-%m-%d %H:%M"), warehouse] + values, value_input_option="USER_ENTERED")
 
 def account_by_login(login):
     supplied_login = str(login).strip().casefold()
@@ -336,6 +358,7 @@ def begin_maintenance(chat_id, username):
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "step_index": 0,
         "issues": [],
+        "refill_quantities": {},
     }
     user_states[chat_id] = "maintenance_photo_exterior_before"
     send_message(chat_id, "📸 Automat zvenku – PŘED údržbou. Pošlete fotografii automatu zvenku.", CANCEL_KEYBOARD)
@@ -344,10 +367,8 @@ def send_current_step(chat_id):
     data = user_data.get(chat_id, {})
     index = data.get("step_index", 0)
     if index >= len(maintenance_steps):
-        user_states[chat_id] = "maintenance_ingredients"
-        data["ingredient_index"] = 0
-        send_message(chat_id, "Údržba je hotová. Teď postupně zadejte počet balení, která jsou v automatu po doplnění.", CANCEL_KEYBOARD)
-        ask_ingredient(chat_id)
+        user_states[chat_id] = "maintenance_photo_table_after"
+        send_message(chat_id, "📸 Stůl – PO údržbě. Vyfoťte čistý stůl.", CANCEL_KEYBOARD)
         return
     step = maintenance_steps[index]
     if step["key"] == "mixers_photo":
@@ -361,11 +382,18 @@ def ask_ingredient(chat_id):
     data = user_data.get(chat_id, {})
     index = data.get("ingredient_index", 0)
     if index >= len(ingredients):
-        user_states[chat_id] = "maintenance_photo_after"
-        send_message(chat_id, "📸 Automat zvenku – PO údržbě. Vyfoťte čistý automat zvenku.", CANCEL_KEYBOARD)
+        try:
+            append_inventory_movement("Výdej zboží", data.get("account", {}), data.get("refill_quantities", {}), data.get("started_at"))
+            send_message(chat_id, "✅ Doplněná množství byla zapsána do listu Výdej zboží.", CANCEL_KEYBOARD)
+        except Exception as exc:
+            log.exception("Could not write maintenance consumption to inventory sheet")
+            send_message(chat_id, f"⚠️ Zápis do skladu se nezdařil: {exc}", CANCEL_KEYBOARD)
+        data["step_index"] = 1
+        user_states[chat_id] = "maintenance_step"
+        send_current_step(chat_id)
         return
-    key, label = ingredients[index]
-    send_message(chat_id, f"{label}\n\nKolik balení je nyní v automatu po doplnění? Zadejte číslo.", CANCEL_KEYBOARD)
+    key, label, pack_size, unit = ingredients[index]
+    send_message(chat_id, f"{label}\n\nKolik jste skutečně doplnili do automatu? Zadejte množství v {unit} (např. {pack_size} nebo 0). Pokud jste tuto položku nedoplňovali, zadejte 0.", CANCEL_KEYBOARD)
 
 def start_receipt(chat_id, username):
     account = authenticated_account(chat_id)
@@ -458,6 +486,18 @@ def finish_receipt(chat_id):
             item.get("note", ""),
         ])
     ws.append_rows(rows, value_input_option="USER_ENTERED")
+    receipt_key_map = {"cups_340": "cups_l", "cups_250": "cups_m", "cups_110": "cups_s", "lids_90": "lids_l", "lids_80": "lids_m", "matcha": "matcha", "milk": "milk", "chocolate": "chocolate", "coffee": "coffee"}
+    inventory_quantities = {}
+    for item in data["receipt_items"]:
+        field = next((key for key, label, _unit in RECEIPT_FIELDS if label == item.get("product")), None)
+        target = receipt_key_map.get(field)
+        if target:
+            inventory_quantities[target] = inventory_quantities.get(target, 0) + float(str(item.get("quantity", "0")).replace(",", "."))
+    if inventory_quantities:
+        try:
+            append_inventory_movement("Příjem zboží", account, inventory_quantities, data.get("receipt_started"))
+        except Exception:
+            log.exception("Could not write goods receipt to inventory spreadsheet")
     user_states.pop(chat_id, None)
     user_data.pop(chat_id, None)
     send_message(chat_id, f"✅ Příjem uložen. Počet položek: {len(rows)}.", MAIN_MENU)
@@ -675,8 +715,13 @@ def webhook():
             log_issue(chat_id)
             return jsonify({"ok": True})
         if text == "✅ Hotovo – další krok":
-            user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
-            send_current_step(chat_id)
+            if user_data[chat_id].get("step_index", 0) == 0:
+                user_data[chat_id]["ingredient_index"] = 0
+                user_states[chat_id] = "maintenance_ingredients"
+                ask_ingredient(chat_id)
+            else:
+                user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
+                send_current_step(chat_id)
             return jsonify({"ok": True})
         send_message(chat_id, "Dokončete aktuální krok tlačítkem „✅ Hotovo – další krok“, nebo nahlaste problém.", STEP_KEYBOARD)
         return jsonify({"ok": True})
@@ -688,37 +733,26 @@ def webhook():
         return jsonify({"ok": True})
 
     if state == "maintenance_ingredients":
-        key, label = ingredients[user_data[chat_id]["ingredient_index"]]
+        key, label, pack_size, unit = ingredients[user_data[chat_id]["ingredient_index"]]
         try:
             quantity = float(text.replace(",", "."))
             if quantity < 0:
                 raise ValueError
         except ValueError:
-            send_message(chat_id, "Zadejte nezáporné číslo, například 2 nebo 1,5.")
+            send_message(chat_id, f"Zadejte nezáporné množství v {unit}, například {pack_size} nebo 0.")
             return jsonify({"ok": True})
+        user_data[chat_id].setdefault("refill_quantities", {})[key] = quantity / pack_size
         user_data[chat_id][key] = text
         user_data[chat_id]["ingredient_index"] += 1
         ask_ingredient(chat_id)
         return jsonify({"ok": True})
 
-    if state in ("maintenance_photo_after", "maintenance_photo_table_after", "maintenance_photo_inside_after"):
-        photo_states = {
-            "maintenance_photo_after": ("photo_after", "📸 Automat zvenku – PO údržbě. Vyfoťte čistý automat zvenku.", "❗ Pošlete fotografii čistého automatu zvenku PO údržbě."),
-            "maintenance_photo_table_after": ("photo_table_after", "📸 Pracovní stůl – PO údržbě. Vyfoťte čistý pracovní stůl.", "❗ Pošlete fotografii čistého pracovního stolu PO údržbě."),
-            "maintenance_photo_inside_after": ("photo_inside_after", "📸 Vnitřek automatu – PO údržbě. Vyfoťte čistý vnitřek automatu.", "❗ Pošlete fotografii čistého vnitřku automatu PO údržbě."),
-        }
+    if state == "maintenance_photo_table_after":
         if "photo" not in msg:
-            send_message(chat_id, photo_states[state][2], CANCEL_KEYBOARD)
+            send_message(chat_id, "❗ Pošlete fotografii čistého stolu PO údržbě.", CANCEL_KEYBOARD)
             return jsonify({"ok": True})
-        user_data[chat_id][photo_states[state][0]] = upload_photo(msg["photo"][-1]["file_id"])
-        if state == "maintenance_photo_after":
-            user_states[chat_id] = "maintenance_photo_table_after"
-            send_message(chat_id, photo_states["maintenance_photo_table_after"][1], CANCEL_KEYBOARD)
-        elif state == "maintenance_photo_table_after":
-            user_states[chat_id] = "maintenance_photo_inside_after"
-            send_message(chat_id, photo_states["maintenance_photo_inside_after"][1], CANCEL_KEYBOARD)
-        else:
-            save_maintenance(chat_id)
+        user_data[chat_id]["photo_table_after"] = upload_photo(msg["photo"][-1]["file_id"])
+        save_maintenance(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_field_quantity":
