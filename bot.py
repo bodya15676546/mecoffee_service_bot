@@ -245,13 +245,13 @@ def save_stocktake_adjustment(account, stocktake):
 def account_by_login(login):
     supplied_login = str(login).strip().casefold()
     admin_login = str(ADMIN_ACCOUNT.get("login", "")).strip().casefold()
-    if admin_login and hmac.compare_digest(admin_login, supplied_login):
+    if admin_login and hmac.compare_digest(admin_login.encode("utf-8"), supplied_login.encode("utf-8")):
         return {"login": str(ADMIN_ACCOUNT.get("login", "")), "password": str(ADMIN_ACCOUNT.get("password", "")), "role": "admin", "location": "MeCoffee – správce", "worksheet": ""}
     for account in LOCATION_ACCOUNTS.values():
         if not isinstance(account, dict):
             continue
         configured_login = str(account.get("login", "")).strip().casefold()
-        if configured_login and hmac.compare_digest(configured_login, supplied_login):
+        if configured_login and hmac.compare_digest(configured_login.encode("utf-8"), supplied_login.encode("utf-8")):
             return {**account, "role": "worker"}
     return None
 
@@ -671,7 +671,7 @@ def webhook():
     if state == "password":
         account = user_data.get(chat_id, {}).get("pending_account", {})
         expected = str(account.get("password", ""))
-        if not expected or not hmac.compare_digest(text, expected):
+        if not expected or not hmac.compare_digest(text.encode("utf-8"), expected.encode("utf-8")):
             user_data.pop(chat_id, None)
             user_states[chat_id] = "login"
             send_message(chat_id, "❌ Nesprávné heslo. Zadejte znovu přihlašovací jméno:", CANCEL_KEYBOARD)
