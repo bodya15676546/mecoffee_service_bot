@@ -312,6 +312,105 @@ def restore_auth_session(chat_id):
         log.exception("Could not restore persistent login")
         return None
 
+
+PROCESS_SHEET = "Rozpracované procesy"
+PROCESS_HEADERS = ["Telegram chat ID", "Stav", "Data JSON", "Aktualizováno"]
+
+def is_workflow_state(state):
+    return isinstance(state, str) and state.startswith(("maintenance_", "receipt_"))
+
+def persist_process(chat_id):
+    """Save active workflow after every incoming update; remove the active row when the workflow ends."""
+    chat_key = str(chat_id)
+    state = user_states.get(chat_id)
+    data = user_data.get(chat_id, {})
+    try:
+        ws = ensure_worksheet(PROCESS_SHEET, PROCESS_HEADERS)
+        rows = ws.get_all_values()
+        row_number = next((idx for idx, row in enumerate(rows[1:], start=2) if row and row[0] == chat_key), None)
+        if is_workflow_state(state) and isinstance(data, dict) and data.get("account"):
+            payload = json.dumps(data, ensure_ascii=False, default=str)
+            values = [chat_key, state, payload, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+            if row_number:
+                ws.update(f"A{row_number}:D{row_number}", [values], value_input_option="RAW")
+            else:
+                ws.append_row(values, value_input_option="RAW")
+        elif row_number:
+            ws.delete_rows(row_number)
+    except Exception:
+        log.exception("Could not persist active workflow for chat %s", chat_key)
+
+def restore_process(chat_id):
+    """Rehydrate an unfinished workflow after a Render restart."""
+    if chat_id in user_states:
+        return bool(user_states.get(chat_id))
+    try:
+        ws = spreadsheet.worksheet(PROCESS_SHEET)
+        rows = ws.get_all_values()
+        chat_key = str(chat_id)
+        row = next((r for r in rows[1:] if len(r) >= 3 and r[0] == chat_key), None)
+        if not row:
+            return False
+        state = row[1]
+        data = json.loads(row[2])
+        if not is_workflow_state(state) or not isinstance(data, dict) or not data.get("account"):
+            return False
+        account = data["account"]
+        safe_account = {
+            "login": str(account.get("login", "")),
+            "location": str(account.get("location", "")),
+            "worksheet": str(account.get("worksheet", "")),
+            "role": str(account.get("role", "worker")),
+        }
+        data["account"] = safe_account
+        user_data[chat_id] = data
+        user_states[chat_id] = state
+        sessions[chat_key] = safe_account
+        log.info("Restored workflow for chat %s at state %s", chat_key, state)
+        return True
+    except gspread.WorksheetNotFound:
+        return False
+    except Exception:
+        log.exception("Could not restore active workflow for chat %s", str(chat_id))
+        return False
+
+def resume_process(chat_id):
+    state = user_states.get(chat_id, "")
+    send_message(chat_id, "↩️ Rozpracovaný proces byl obnoven. Pokračujeme od posledního uloženého kroku.")
+    if state == "maintenance_photo_exterior_before":
+        send_message(chat_id, "📸 Automat zvenku – PŘED údržbou. Pošlete fotografii automatu zvenku.", CANCEL_KEYBOARD)
+    elif state == "maintenance_photo_table_before":
+        send_message(chat_id, "📸 Pracovní stůl – PŘED údržbou. Pošlete fotografii pracovní plochy.", CANCEL_KEYBOARD)
+    elif state == "maintenance_photo_inside_before":
+        send_message(chat_id, "📸 Vnitřek automatu – PŘED údržbou. Pošlete fotografii vnitřku automatu.", CANCEL_KEYBOARD)
+    elif state == "maintenance_photo_mixers":
+        idx = user_data.get(chat_id, {}).get("step_index", 0)
+        step = maintenance_steps[min(idx, len(maintenance_steps) - 1)]
+        send_message(chat_id, f"📸 {step['title']}\n\n{step['text']}", CANCEL_KEYBOARD)
+    elif state == "maintenance_step":
+        send_current_step(chat_id)
+    elif state == "maintenance_ingredients":
+        ask_ingredient(chat_id)
+    elif state == "maintenance_stocktake":
+        ask_stocktake_item(chat_id)
+    elif state == "maintenance_issue":
+        send_message(chat_id, "Popište problém co nejkonkrétněji, včetně toho, co nefunguje a od kdy.", CANCEL_KEYBOARD)
+    elif state == "maintenance_photo_table_after":
+        send_message(chat_id, "📸 Stůl – PO údržbě. Vyfoťte čistý stůl.", CANCEL_KEYBOARD)
+    elif state == "receipt_field_quantity":
+        ask_receipt_field(chat_id)
+    elif state == "receipt_syrup_note":
+        send_message(chat_id, "Jaký sirup jste přijali? Uveďte příchuť nebo druh.", CANCEL_KEYBOARD)
+    elif state == "receipt_product":
+        send_message(chat_id, "Zadejte název dalšího produktu:", CANCEL_KEYBOARD)
+    elif state == "receipt_quantity":
+        item = user_data.get(chat_id, {}).get("current_item", {})
+        send_message(chat_id, f"Produkt: {item.get('product', '')}\n\nZadejte množství (např. 10 nebo 1,5):", CANCEL_KEYBOARD)
+    elif state == "receipt_unit":
+        send_message(chat_id, "Vyberte jednotku:", UNIT_KEYBOARD)
+    elif state == "receipt_more":
+        send_message(chat_id, "Přidejte další produkt, nebo dokončete příjem.", RECEIPT_KEYBOARD)
+
 def authenticated_account(chat_id):
     return sessions.get(str(chat_id))
 
@@ -621,28 +720,38 @@ def webhook():
                 send_message(callback_chat_id, "Odeslání připomínky zrušeno.", ADMIN_MENU)
             else:
                 send_maintenance_reminder(callback_chat_id, callback_data[len("remind:"):])
+        persist_process(chat_id)
         return jsonify({"ok": True})
     if "message" not in data:
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     msg = data["message"]
     chat_id = msg.get("chat", {}).get("id")
     if chat_id is None:
+        persist_process(chat_id)
         return jsonify({"ok": True})
     chat_key = str(chat_id)
     sender = msg.get("from", {})
     username = sender.get("username") or sender.get("first_name") or str(sender.get("id", "unknown"))
     text = msg.get("text", "").strip()
+    restore_process(chat_id)
     state = user_states.get(chat_id)
 
     if text == "/start":
         if restore_auth_session(chat_id):
-            show_menu(chat_id)
+            if is_workflow_state(user_states.get(chat_id)):
+                resume_process(chat_id)
+            else:
+                show_menu(chat_id)
         else:
             start_login(chat_id)
+        persist_process(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "/login":
         start_login(chat_id, forget_saved=True)
+        persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "🚪 Odhlásit":
         sessions.pop(chat_key, None)
@@ -651,21 +760,25 @@ def webhook():
         user_data.pop(chat_id, None)
         send_message(chat_id, "Byli jste odhlášeni.")
         start_login(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "❌ Zrušit":
         user_states.pop(chat_id, None)
         user_data.pop(chat_id, None)
         show_menu(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "login":
         account = account_by_login(text)
         if not account:
             send_message(chat_id, "❌ Tento login neznám. Zkuste to znovu, nebo kontaktujte správce.", CANCEL_KEYBOARD)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id] = {"pending_account": account}
         user_states[chat_id] = "password"
         send_message(chat_id, "Zadejte heslo provozovny:", CANCEL_KEYBOARD)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "password":
@@ -675,7 +788,8 @@ def webhook():
             user_data.pop(chat_id, None)
             user_states[chat_id] = "login"
             send_message(chat_id, "❌ Nesprávné heslo. Zadejte znovu přihlašovací jméno:", CANCEL_KEYBOARD)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         safe_account = {
             "login": str(account.get("login", "")),
             "location": str(account.get("location", "")),
@@ -693,76 +807,93 @@ def webhook():
         except Exception:
             log.warning("Could not delete password message")
         show_menu(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if not authenticated_account(chat_id) and not restore_auth_session(chat_id):
         start_login(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if text == "🧽 Údržba":
         begin_maintenance(chat_id, username)
+        persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "📦 Příjem zboží":
         start_receipt(chat_id, username)
+        persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "🔔 Připomenout údržbu":
         if not is_admin(chat_id):
             send_message(chat_id, "❌ Tuto funkci může používat pouze správce.", WORKER_MENU)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         locations = authenticated_location_names()
         if not locations:
             send_message(chat_id, "⚠️ V LOCATION_ACCOUNTS_JSON nejsou nastaveny provozovny.", ADMIN_MENU)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         buttons = [[{"text": name, "callback_data": "remind:" + name}] for name in locations]
         buttons.append([{"text": "Zrušit", "callback_data": "remind:cancel"}])
         send_message(chat_id, "Vyberte provozovnu, které chcete poslat připomínku údržby:", inline_keyboard=buttons)
+        persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "🚪 Odhlásit":
         sessions.pop(chat_key, None)
         start_login(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_exterior_before":
         if "photo" not in msg:
             send_message(chat_id, "❗ Je potřeba poslat fotografii automatu zvenku PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id]["photo_automat_before"] = upload_photo(msg["photo"][-1]["file_id"])
         user_states[chat_id] = "maintenance_photo_table_before"
         send_message(chat_id, "📸 Pracovní stůl – PŘED údržbou. Pošlete fotografii pracovní plochy.", CANCEL_KEYBOARD)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_table_before":
         if "photo" not in msg:
             send_message(chat_id, "❗ Je potřeba poslat fotografii pracovního stolu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id]["photo_table_before"] = upload_photo(msg["photo"][-1]["file_id"])
         user_states[chat_id] = "maintenance_photo_inside_before"
         send_message(chat_id, "📸 Vnitřek automatu – PŘED údržbou. Pošlete fotografii vnitřku automatu.", CANCEL_KEYBOARD)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_inside_before":
         if "photo" not in msg:
             send_message(chat_id, "❗ Je potřeba poslat fotografii vnitřku automatu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id]["photo_inside_before"] = upload_photo(msg["photo"][-1]["file_id"])
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_mixers":
         if "photo" not in msg:
             send_message(chat_id, "❗ Pošlete fotografii čistých mixérů, abyste mohli pokračovat.", CANCEL_KEYBOARD)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id]["photo_mixers_clean"] = upload_photo(msg["photo"][-1]["file_id"])
         user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_step":
         if text == "⚠️ Nahlásit problém":
             log_issue(chat_id)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         if text == "✅ Hotovo – další krok":
             if user_data[chat_id].get("step_index", 0) == 0:
                 user_data[chat_id]["ingredient_index"] = 0
@@ -771,14 +902,17 @@ def webhook():
             else:
                 user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
                 send_current_step(chat_id)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         send_message(chat_id, "Dokončete aktuální krok tlačítkem „✅ Hotovo – další krok“, nebo nahlaste problém.", STEP_KEYBOARD)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_issue":
         user_data.setdefault(chat_id, {}).setdefault("issues", []).append(text or "[Problém bez textového popisu]")
         send_message(chat_id, "⚠️ Problém zaznamenán. Pokračujte v údržbě tlačítkem níže.", STEP_KEYBOARD)
         user_states[chat_id] = "maintenance_step"
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_ingredients":
@@ -789,11 +923,13 @@ def webhook():
                 raise ValueError
         except ValueError:
             send_message(chat_id, f"Zadejte nezáporné množství v {unit}, například {pack_size} nebo 0.")
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id].setdefault("refill_quantities", {})[key] = quantity / pack_size
         user_data[chat_id][key] = text
         user_data[chat_id]["ingredient_index"] += 1
         ask_ingredient(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_stocktake":
@@ -804,27 +940,33 @@ def webhook():
                 raise ValueError
         except ValueError:
             send_message(chat_id, "Zadejte nezáporný počet balení, například 3 nebo 0.", CANCEL_KEYBOARD)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id]["stocktake"][key] = quantity
         user_data[chat_id]["stocktake_index"] += 1
         ask_stocktake_item(chat_id)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_field_quantity":
         save_receipt_field_quantity(chat_id, text)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_syrup_note":
         save_receipt_syrup_note(chat_id, text)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_product":
         if not text:
             send_message(chat_id, "Zadejte název produktu jako text.")
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id]["current_item"] = {"product": text, "note": ""}
         user_states[chat_id] = "receipt_quantity"
         send_message(chat_id, f"Produkt: {text}\n\nZadejte množství (např. 10 nebo 1,5):", CANCEL_KEYBOARD)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_quantity":
@@ -834,23 +976,27 @@ def webhook():
                 raise ValueError
         except ValueError:
             send_message(chat_id, "Zadejte množství větší než 0, například 10 nebo 1,5.")
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id]["current_item"]["quantity"] = text
         user_states[chat_id] = "receipt_unit"
         send_message(chat_id, "Vyberte jednotku:", UNIT_KEYBOARD)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_unit":
         allowed_units = {"ks", "balení", "g", "kg", "ml", "l"}
         if text not in allowed_units:
             send_message(chat_id, "Vyberte jednu z nabízených jednotek.", UNIT_KEYBOARD)
-            return jsonify({"ok": True})
+            persist_process(chat_id)
+        return jsonify({"ok": True})
         user_data[chat_id]["current_item"]["unit"] = text
         user_data[chat_id]["current_item"].setdefault("note", "")
         user_data[chat_id]["receipt_items"].append(user_data[chat_id].pop("current_item"))
         user_states[chat_id] = "receipt_more"
         count = len(user_data[chat_id]["receipt_items"])
         send_message(chat_id, f"✅ Položka přidána. Celkem položek: {count}.\n\nPřidejte další produkt, nebo dokončete příjem.", RECEIPT_KEYBOARD)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "receipt_more":
@@ -861,10 +1007,12 @@ def webhook():
             finish_receipt(chat_id)
         else:
             send_message(chat_id, "Vyberte „➕ Přidat další položku“ nebo „✅ Dokončit příjem“.", RECEIPT_KEYBOARD)
+        persist_process(chat_id)
         return jsonify({"ok": True})
 
     send_message(chat_id, "Vyberte jednu z možností v menu.", MAIN_MENU)
-    return jsonify({"ok": True})
+    persist_process(chat_id)
+        return jsonify({"ok": True})
 
 @app.route("/")
 def home():
