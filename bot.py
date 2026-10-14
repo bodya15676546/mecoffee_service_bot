@@ -774,7 +774,7 @@ def webhook():
         if not account:
             send_message(chat_id, "❌ Tento login neznám. Zkuste to znovu, nebo kontaktujte správce.", CANCEL_KEYBOARD)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id] = {"pending_account": account}
         user_states[chat_id] = "password"
         send_message(chat_id, "Zadejte heslo provozovny:", CANCEL_KEYBOARD)
@@ -789,7 +789,7 @@ def webhook():
             user_states[chat_id] = "login"
             send_message(chat_id, "❌ Nesprávné heslo. Zadejte znovu přihlašovací jméno:", CANCEL_KEYBOARD)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         safe_account = {
             "login": str(account.get("login", "")),
             "location": str(account.get("location", "")),
@@ -827,12 +827,12 @@ def webhook():
         if not is_admin(chat_id):
             send_message(chat_id, "❌ Tuto funkci může používat pouze správce.", WORKER_MENU)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         locations = authenticated_location_names()
         if not locations:
             send_message(chat_id, "⚠️ V LOCATION_ACCOUNTS_JSON nejsou nastaveny provozovny.", ADMIN_MENU)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         buttons = [[{"text": name, "callback_data": "remind:" + name}] for name in locations]
         buttons.append([{"text": "Zrušit", "callback_data": "remind:cancel"}])
         send_message(chat_id, "Vyberte provozovnu, které chcete poslat připomínku údržby:", inline_keyboard=buttons)
@@ -848,7 +848,7 @@ def webhook():
         if "photo" not in msg:
             send_message(chat_id, "❗ Je potřeba poslat fotografii automatu zvenku PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id]["photo_automat_before"] = upload_photo(msg["photo"][-1]["file_id"])
         user_states[chat_id] = "maintenance_photo_table_before"
         send_message(chat_id, "📸 Pracovní stůl – PŘED údržbou. Pošlete fotografii pracovní plochy.", CANCEL_KEYBOARD)
@@ -859,7 +859,7 @@ def webhook():
         if "photo" not in msg:
             send_message(chat_id, "❗ Je potřeba poslat fotografii pracovního stolu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id]["photo_table_before"] = upload_photo(msg["photo"][-1]["file_id"])
         user_states[chat_id] = "maintenance_photo_inside_before"
         send_message(chat_id, "📸 Vnitřek automatu – PŘED údržbou. Pošlete fotografii vnitřku automatu.", CANCEL_KEYBOARD)
@@ -870,7 +870,7 @@ def webhook():
         if "photo" not in msg:
             send_message(chat_id, "❗ Je potřeba poslat fotografii vnitřku automatu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id]["photo_inside_before"] = upload_photo(msg["photo"][-1]["file_id"])
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
@@ -881,7 +881,7 @@ def webhook():
         if "photo" not in msg:
             send_message(chat_id, "❗ Pošlete fotografii čistých mixérů, abyste mohli pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id]["photo_mixers_clean"] = upload_photo(msg["photo"][-1]["file_id"])
         user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
         user_states[chat_id] = "maintenance_step"
@@ -893,7 +893,7 @@ def webhook():
         if text == "⚠️ Nahlásit problém":
             log_issue(chat_id)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         if text == "✅ Hotovo – další krok":
             if user_data[chat_id].get("step_index", 0) == 0:
                 user_data[chat_id]["ingredient_index"] = 0
@@ -903,7 +903,7 @@ def webhook():
                 user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
                 send_current_step(chat_id)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         send_message(chat_id, "Dokončete aktuální krok tlačítkem „✅ Hotovo – další krok“, nebo nahlaste problém.", STEP_KEYBOARD)
         persist_process(chat_id)
         return jsonify({"ok": True})
@@ -924,7 +924,7 @@ def webhook():
         except ValueError:
             send_message(chat_id, f"Zadejte nezáporné množství v {unit}, například {pack_size} nebo 0.")
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id].setdefault("refill_quantities", {})[key] = quantity / pack_size
         user_data[chat_id][key] = text
         user_data[chat_id]["ingredient_index"] += 1
@@ -941,7 +941,7 @@ def webhook():
         except ValueError:
             send_message(chat_id, "Zadejte nezáporný počet balení, například 3 nebo 0.", CANCEL_KEYBOARD)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id]["stocktake"][key] = quantity
         user_data[chat_id]["stocktake_index"] += 1
         ask_stocktake_item(chat_id)
@@ -962,7 +962,7 @@ def webhook():
         if not text:
             send_message(chat_id, "Zadejte název produktu jako text.")
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id]["current_item"] = {"product": text, "note": ""}
         user_states[chat_id] = "receipt_quantity"
         send_message(chat_id, f"Produkt: {text}\n\nZadejte množství (např. 10 nebo 1,5):", CANCEL_KEYBOARD)
@@ -977,7 +977,7 @@ def webhook():
         except ValueError:
             send_message(chat_id, "Zadejte množství větší než 0, například 10 nebo 1,5.")
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id]["current_item"]["quantity"] = text
         user_states[chat_id] = "receipt_unit"
         send_message(chat_id, "Vyberte jednotku:", UNIT_KEYBOARD)
@@ -989,7 +989,7 @@ def webhook():
         if text not in allowed_units:
             send_message(chat_id, "Vyberte jednu z nabízených jednotek.", UNIT_KEYBOARD)
             persist_process(chat_id)
-        return jsonify({"ok": True})
+            return jsonify({"ok": True})
         user_data[chat_id]["current_item"]["unit"] = text
         user_data[chat_id]["current_item"].setdefault("note", "")
         user_data[chat_id]["receipt_items"].append(user_data[chat_id].pop("current_item"))
