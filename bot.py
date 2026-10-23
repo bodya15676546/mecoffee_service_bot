@@ -315,6 +315,8 @@ def restore_auth_session(chat_id):
 
 PROCESS_SHEET = "Rozpracované procesy"
 PROCESS_HEADERS = ["Telegram chat ID", "Stav", "Data JSON", "Aktualizováno"]
+PROCESS_HISTORY_SHEET = "Historie kroků"
+PROCESS_HISTORY_HEADERS = ["Čas", "Telegram chat ID", "Provozovna", "Telegram uživatel", "Stav", "Data JSON"]
 
 def is_workflow_state(state):
     return isinstance(state, str) and state.startswith(("maintenance_", "receipt_"))
@@ -335,10 +337,17 @@ def persist_process(chat_id):
                 ws.update(f"A{row_number}:D{row_number}", [values], value_input_option="RAW")
             else:
                 ws.append_row(values, value_input_option="RAW")
+            history_ws = ensure_worksheet(PROCESS_HISTORY_SHEET, PROCESS_HISTORY_HEADERS)
+            history_ws.append_row([
+                values[3], chat_key, str(data["account"].get("location", "")),
+                str(data.get("telegram_user", "")), state, payload
+            ], value_input_option="RAW")
         elif row_number:
             ws.delete_rows(row_number)
     except Exception:
         log.exception("Could not persist active workflow for chat %s", chat_key)
+        if is_workflow_state(state):
+            send_message(chat_id, "⚠️ Nepodařilo se uložit průběh do Google Sheets. Nepokračujte, dokud správce neověří připojení tabulky.")
 
 def restore_process(chat_id):
     """Rehydrate an unfinished workflow after a Render restart."""
@@ -724,16 +733,13 @@ def webhook():
                 send_message(callback_chat_id, "Odeslání připomínky zrušeno.", ADMIN_MENU)
             else:
                 send_maintenance_reminder(callback_chat_id, callback_data[len("remind:"):])
-        persist_process(chat_id)
         return jsonify({"ok": True})
     if "message" not in data:
-        persist_process(chat_id)
         return jsonify({"ok": True})
 
     msg = data["message"]
     chat_id = msg.get("chat", {}).get("id")
     if chat_id is None:
-        persist_process(chat_id)
         return jsonify({"ok": True})
     chat_key = str(chat_id)
     sender = msg.get("from", {})
@@ -750,7 +756,6 @@ def webhook():
                 show_menu(chat_id)
         else:
             start_login(chat_id)
-        persist_process(chat_id)
         persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "/login":
@@ -816,6 +821,12 @@ def webhook():
 
     if not authenticated_account(chat_id) and not restore_auth_session(chat_id):
         start_login(chat_id)
+        persist_process(chat_id)
+        return jsonify({"ok": True})
+
+    if is_workflow_state(state) and text in ("🧽 Údržba", "📦 Příjem zboží"):
+        send_message(chat_id, "⚠️ Máte rozpracovaný proces. Nejprve jej dokončete, nebo použijte ❌ Zrušit.")
+        resume_process(chat_id)
         persist_process(chat_id)
         return jsonify({"ok": True})
 
