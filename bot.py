@@ -313,75 +313,81 @@ def restore_auth_session(chat_id):
         return None
 
 
-PROCESS_SHEET = "Rozpracované procesy"
-PROCESS_HEADERS = ["Telegram chat ID", "Stav", "Data JSON", "Aktualizováno"]
-PROCESS_HISTORY_SHEET = "Historie kroků"
-PROCESS_HISTORY_HEADERS = ["Čas", "Telegram chat ID", "Provozovna", "Telegram uživatel", "Stav", "Data JSON"]
+MAINTENANCE_HEADERS = [
+    "Datum", "Uživatel", "Káva", "Mléko", "Čokoláda", "Matcha", "Kelímky S", "Kelímky M", "Kelímky L",
+    "Foto automat před", "Foto stůl před", "Foto vnitřek před", "Foto mixéry čisté",
+    "Foto automat po", "Foto stůl po", "Foto vnitřek po", "Provozovna", "Problémy",
+    "Telegram chat ID", "Stav procesu", "Data procesu JSON", "Aktualizováno"
+]
 
 def is_workflow_state(state):
     return isinstance(state, str) and state.startswith(("maintenance_", "receipt_"))
 
+def maintenance_row(data, state, chat_id):
+    account = data.get("account", {})
+    return [
+        data.get("started_at", ""), account.get("login", ""),
+        data.get("coffee", ""), data.get("milk", ""), data.get("chocolate", ""), data.get("matcha", ""),
+        data.get("cups_s", ""), data.get("cups_m", ""), data.get("cups_l", ""),
+        data.get("photo_automat_before", ""), data.get("photo_table_before", ""),
+        data.get("photo_inside_before", ""), data.get("photo_mixers_clean", ""),
+        data.get("photo_after", ""), data.get("photo_table_after", ""),
+        data.get("photo_inside_after", ""), account.get("location", ""),
+        " | ".join(data.get("issues", [])), str(chat_id), state,
+        json.dumps(data, ensure_ascii=False, default=str),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ]
+
+def find_maintenance_row(ws, chat_id):
+    rows = ws.get_all_values()
+    return next((i for i, row in enumerate(rows[1:], start=2)
+                 if len(row) > 18 and row[18] == str(chat_id) and
+                 len(row) > 19 and row[19] != "Dokončeno"), None)
+
 def persist_process(chat_id):
-    """Save active workflow after every incoming update; remove the active row when the workflow ends."""
-    chat_key = str(chat_id)
     state = user_states.get(chat_id)
     data = user_data.get(chat_id, {})
+    if not isinstance(data, dict) or not data.get("account") or not state or not state.startswith("maintenance_"):
+        return
     try:
-        ws = ensure_worksheet(PROCESS_SHEET, PROCESS_HEADERS)
-        rows = ws.get_all_values()
-        row_number = next((idx for idx, row in enumerate(rows[1:], start=2) if row and row[0] == chat_key), None)
-        if is_workflow_state(state) and isinstance(data, dict) and data.get("account"):
-            payload = json.dumps(data, ensure_ascii=False, default=str)
-            values = [chat_key, state, payload, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
-            if row_number:
-                ws.update(f"A{row_number}:D{row_number}", [values], value_input_option="RAW")
-            else:
-                ws.append_row(values, value_input_option="RAW")
-            history_ws = ensure_worksheet(PROCESS_HISTORY_SHEET, PROCESS_HISTORY_HEADERS)
-            history_ws.append_row([
-                values[3], chat_key, str(data["account"].get("location", "")),
-                str(data.get("telegram_user", "")), state, payload
-            ], value_input_option="RAW")
-        elif row_number:
-            ws.delete_rows(row_number)
+        sheet_name = data["account"].get("worksheet")
+        if not sheet_name:
+            raise ValueError("Provozovna nemá nastavený list pro údržbu")
+        ws = ensure_worksheet(sheet_name, MAINTENANCE_HEADERS)
+        row_number = find_maintenance_row(ws, chat_id)
+        values = maintenance_row(data, state, chat_id)
+        if row_number:
+            ws.update(f"A{row_number}:V{row_number}", [values], value_input_option="RAW")
+        else:
+            ws.append_row(values, value_input_option="RAW")
     except Exception:
-        log.exception("Could not persist active workflow for chat %s", chat_key)
-        if is_workflow_state(state):
-            send_message(chat_id, "⚠️ Nepodařilo se uložit průběh do Google Sheets. Nepokračujte, dokud správce neověří připojení tabulky.")
+        log.exception("Failed to save maintenance step for chat %s", chat_id)
+        send_message(chat_id, "⚠️ Krok se nepodařilo uložit do tabulky provozovny. Kontaktujte správce.")
 
 def restore_process(chat_id):
-    """Rehydrate an unfinished workflow after a Render restart."""
-    if chat_id in user_states:
-        return bool(user_states.get(chat_id))
-    try:
-        ws = spreadsheet.worksheet(PROCESS_SHEET)
-        rows = ws.get_all_values()
-        chat_key = str(chat_id)
-        row = next((r for r in rows[1:] if len(r) >= 3 and r[0] == chat_key), None)
-        if not row:
-            return False
-        state = row[1]
-        data = json.loads(row[2])
-        if not is_workflow_state(state) or not isinstance(data, dict) or not data.get("account"):
-            return False
-        account = data["account"]
-        safe_account = {
-            "login": str(account.get("login", "")),
-            "location": str(account.get("location", "")),
-            "worksheet": str(account.get("worksheet", "")),
-            "role": str(account.get("role", "worker")),
-        }
-        data["account"] = safe_account
-        user_data[chat_id] = data
-        user_states[chat_id] = state
-        sessions[chat_key] = safe_account
-        log.info("Restored workflow for chat %s at state %s", chat_key, state)
+    if is_workflow_state(user_states.get(chat_id)):
         return True
-    except gspread.WorksheetNotFound:
-        return False
+    try:
+        for account in LOCATION_ACCOUNTS.values():
+            if not isinstance(account, dict) or not account.get("worksheet"):
+                continue
+            try:
+                ws = spreadsheet.worksheet(account["worksheet"])
+            except gspread.WorksheetNotFound:
+                continue
+            rows = ws.get_all_values()
+            for row in reversed(rows[1:]):
+                if len(row) > 20 and row[18] == str(chat_id) and row[19].startswith("maintenance_"):
+                    data = json.loads(row[20])
+                    if not isinstance(data, dict) or not data.get("account"):
+                        continue
+                    user_data[chat_id] = data
+                    user_states[chat_id] = row[19]
+                    sessions[str(chat_id)] = data["account"]
+                    return True
     except Exception:
-        log.exception("Could not restore active workflow for chat %s", str(chat_id))
-        return False
+        log.exception("Could not restore maintenance for chat %s", chat_id)
+    return False
 
 def resume_process(chat_id):
     state = user_states.get(chat_id, "")
@@ -672,43 +678,20 @@ def save_maintenance(chat_id):
     account = data.get("account", {})
     sheet_name = account.get("worksheet", "")
     if not sheet_name:
-        send_message(chat_id, "❌ U účtu není nastaven list pro report údržby. Kontaktujte správce.")
+        send_message(chat_id, "❌ U účtu není nastaven list pro report údržby.")
         return
-    headers = [
-        "Datum", "Uživatel", "Káva", "Mléko", "Čokoláda", "Matcha", "Kelímky S", "Kelímky M", "Kelímky L",
-        "Foto automat před", "Foto stůl před", "Foto vnitřek před", "Foto mixéry čisté",
-        "Foto automat po", "Foto stůl po", "Foto vnitřek po", "Provozovna", "Problémy"
-    ]
-    ws = ensure_worksheet(sheet_name, headers)
-    ws.append_row([
-        datetime.now().strftime("%Y-%m-%d %H:%M"),
-        account.get("login", ""),
-        data.get("coffee", ""),
-        data.get("milk", ""),
-        data.get("chocolate", ""),
-        data.get("matcha", ""),
-        data.get("cups_s", ""),
-        data.get("cups_m", ""),
-        data.get("cups_l", ""),
-        data.get("photo_automat_before", ""),
-        data.get("photo_table_before", ""),
-        data.get("photo_inside_before", ""),
-        data.get("photo_mixers_clean", ""),
-        data.get("photo_after", ""),
-        data.get("photo_table_after", ""),
-        data.get("photo_inside_after", ""),
-        account.get("location", ""),
-        " | ".join(data.get("issues", [])),
-    ])
-    if data.get("issues"):
-        issue_ws = ensure_worksheet("Problémy údržby", ["Datum", "Provozovna", "Účet", "Telegram uživatel", "Problém"])
-        issue_ws.append_row([
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-            account.get("location", ""),
-            account.get("login", ""),
-            data.get("telegram_user", ""),
-            " | ".join(data["issues"]),
-        ])
+    try:
+        ws = ensure_worksheet(sheet_name, MAINTENANCE_HEADERS)
+        row_number = find_maintenance_row(ws, chat_id)
+        values = maintenance_row(data, "Dokončeno", chat_id)
+        if row_number:
+            ws.update(f"A{row_number}:V{row_number}", [values], value_input_option="RAW")
+        else:
+            ws.append_row(values, value_input_option="RAW")
+    except Exception:
+        log.exception("Failed to finish maintenance for chat %s", chat_id)
+        send_message(chat_id, "❌ Nepodařilo se uložit dokončenou údržbu. Zkuste to znovu.")
+        return
     user_states.pop(chat_id, None)
     user_data.pop(chat_id, None)
     send_message(chat_id, "✅ Údržba byla uložena.", MAIN_MENU)
