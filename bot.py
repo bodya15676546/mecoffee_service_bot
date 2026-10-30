@@ -168,6 +168,18 @@ def send_guide(chat_id, step):
     else:
         send_message(chat_id, "📖 Podrobný návod zatím není připojen. Odkaz lze doplnit v nastavení bota.")
 
+def image_file_id(msg):
+    """Telegram sends images either as compressed photo or as an image document."""
+    photos = msg.get("photo") or []
+    if photos:
+        return photos[-1].get("file_id")
+    doc = msg.get("document") or {}
+    mime = str(doc.get("mime_type") or "").lower()
+    filename = str(doc.get("file_name") or "").lower()
+    if mime.startswith("image/") or filename.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic")):
+        return doc.get("file_id")
+    return None
+
 def upload_photo(file_id):
     response = requests.get(f"{API_URL}/getFile", params={"file_id": file_id}, timeout=15)
     response.raise_for_status()
@@ -843,44 +855,44 @@ def webhook():
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_exterior_before":
-        if "photo" not in msg:
+        if not image_file_id(msg):
             send_message(chat_id, "❗ Je potřeba poslat fotografii automatu zvenku PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_automat_before"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_data[chat_id]["photo_automat_before"] = upload_photo(image_file_id(msg))
         user_states[chat_id] = "maintenance_photo_table_before"
         send_message(chat_id, "📸 Pracovní stůl – PŘED údržbou. Pošlete fotografii pracovní plochy.", CANCEL_KEYBOARD)
         persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_table_before":
-        if "photo" not in msg:
+        if not image_file_id(msg):
             send_message(chat_id, "❗ Je potřeba poslat fotografii pracovního stolu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_table_before"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_data[chat_id]["photo_table_before"] = upload_photo(image_file_id(msg))
         user_states[chat_id] = "maintenance_photo_inside_before"
         send_message(chat_id, "📸 Vnitřek automatu – PŘED údržbou. Pošlete fotografii vnitřku automatu.", CANCEL_KEYBOARD)
         persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_inside_before":
-        if "photo" not in msg:
+        if not image_file_id(msg):
             send_message(chat_id, "❗ Je potřeba poslat fotografii vnitřku automatu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_inside_before"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_data[chat_id]["photo_inside_before"] = upload_photo(image_file_id(msg))
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
         persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_mixers":
-        if "photo" not in msg:
+        if not image_file_id(msg):
             send_message(chat_id, "❗ Pošlete fotografii čistých mixérů, abyste mohli pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_mixers_clean"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_data[chat_id]["photo_mixers_clean"] = upload_photo(image_file_id(msg))
         user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
@@ -888,33 +900,33 @@ def webhook():
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_table_after":
-        if "photo" not in msg:
+        if not image_file_id(msg):
             send_message(chat_id, "❗ Pošlete fotografii čistého stolu PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_table_after"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_data[chat_id]["photo_table_after"] = upload_photo(image_file_id(msg))
         user_states[chat_id] = "maintenance_photo_inside_after"
         send_message(chat_id, "📸 Vnitřek automatu – PO údržbě. Vyfoťte čistý vnitřek automatu.", CANCEL_KEYBOARD)
         persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_inside_after":
-        if "photo" not in msg:
+        if not image_file_id(msg):
             send_message(chat_id, "❗ Pošlete fotografii vnitřku automatu PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_inside_after"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_data[chat_id]["photo_inside_after"] = upload_photo(image_file_id(msg))
         user_states[chat_id] = "maintenance_photo_exterior_after"
         send_message(chat_id, "📸 Automat zvenku – PO údržbě. Vyfoťte čistý automat zvenku.", CANCEL_KEYBOARD)
         persist_process(chat_id)
         return jsonify({"ok": True})
 
     if state == "maintenance_photo_exterior_after":
-        if "photo" not in msg:
+        if not image_file_id(msg):
             send_message(chat_id, "❗ Pošlete fotografii automatu zvenku PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_after"] = upload_photo(msg["photo"][-1]["file_id"])
+        user_data[chat_id]["photo_after"] = upload_photo(image_file_id(msg))
         user_data[chat_id]["stocktake"] = {}
         user_data[chat_id]["stocktake_index"] = 0
         user_states[chat_id] = "maintenance_stocktake"
@@ -1043,6 +1055,10 @@ def webhook():
         persist_process(chat_id)
         return jsonify({"ok": True})
 
+    if msg.get("photo") or msg.get("document"):
+        log.error("Image received without matching workflow state: chat=%s state=%r authenticated=%s", chat_id, state, bool(authenticated_account(chat_id)))
+        send_message(chat_id, "⚠️ Nepodařilo se najít rozpracovanou údržbu. Pošlete /start pro obnovení. Pokud problém trvá, kontaktujte správce.")
+        return jsonify({"ok": True})
     send_message(chat_id, "Vyberte jednu z možností v menu.", MAIN_MENU)
     persist_process(chat_id)
     return jsonify({"ok": True})
