@@ -1062,8 +1062,7 @@ def webhook():
 
     send_message(chat_id, "Vyberte jednu z možností v menu.", MAIN_MENU)
     persist_process(chat_id)
-        persist_process(chat_id)
-        return jsonify({"ok": True})
+    return jsonify({"ok": True})
 
 @app.route("/")
 def home():
