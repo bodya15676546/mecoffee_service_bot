@@ -1,5 +1,21 @@
 # MeCoffee Service Bot
 
+## Єдина робоча гілка
+
+**Production branch: `main`.** Render → Settings → Build & Deploy → Branch = `main`.
+
+Всі наступні виправлення бота вносити безпосередньо в `main`. Не перемикати Render між feature-гілками.
+
+- `bot.py` — основний код Telegram-бота.
+- `requirements.txt` — залежності.
+- `render.yaml` — конфігурація сервісу.
+- Google Sheets — звіти обслуговування зберігаються в аркуші конкретної локації; одне обслуговування = один рядок, який оновлюється після кожного кроку.
+- Стовпці S–V у звіті використовуються для відновлення незавершеного обслуговування після перезапуску.
+
+---
+
+# MeCoffee Service Bot
+
 Telegram bot for location-based maintenance reports and stock receipt logging.
 
 ## Required environment variables
