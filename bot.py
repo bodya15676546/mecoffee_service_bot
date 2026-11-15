@@ -215,13 +215,13 @@ def drive_cleaning_folder():
 
 
 def drive_location_folder(account):
-    """Find/create exactly one folder per location directly under the configured root."""
+    """Find/create one folder per location under foto cisteni."""
     name = str(account.get("worksheet") or account.get("location") or "").strip()
     if not name:
         raise ValueError("Missing location folder name")
     if "zelezny" in name.casefold() or "železn" in name.casefold():
         raise ValueError("Železný Brod is no longer an active location")
-    safe_name = re.sub(r"[^\\w .-]", "_", name)
+    safe_name = re.sub(r"[^\w .-]", "_", name)
     parent_id = drive_cleaning_folder()
     query = ("name = '" + safe_name.replace("\\", "\\\\").replace("'", "\\'") +
              "' and mimeType = 'application/vnd.google-apps.folder' and '" +
@@ -238,6 +238,30 @@ def drive_location_folder(account):
         "parents": [parent_id]
     }, params={"fields": "id", "supportsAllDrives": "true"})
     return response.json()["id"]
+
+
+def save_maintenance_photo(chat_id, msg, state):
+    """Keep workflow at the photo step when Drive upload fails."""
+    file_id = image_file_id(msg)
+    if not file_id:
+        return False
+    try:
+        link = upload_photo(file_id, user_data[chat_id]["account"], state)
+    except Exception:
+        log.exception("Could not save maintenance photo for chat %s at step %s", chat_id, state)
+        send_message(chat_id, "❌ Fotografii se nepodařilo uložit na Google Drive. Zkuste ji prosím poslat znovu. Údržba zůstává na tomto kroku.", CANCEL_KEYBOARD)
+        return False
+    field = {
+        "maintenance_photo_exterior_before": "photo_automat_before",
+        "maintenance_photo_table_before": "photo_table_before",
+        "maintenance_photo_inside_before": "photo_inside_before",
+        "maintenance_photo_mixers": "photo_mixers_clean",
+        "maintenance_photo_table_after": "photo_table_after",
+        "maintenance_photo_inside_after": "photo_inside_after",
+        "maintenance_photo_exterior_after": "photo_after",
+    }[state]
+    user_data[chat_id][field] = link
+    return True
 
 
 PHOTO_LABELS = {
@@ -971,7 +995,8 @@ def webhook():
             send_message(chat_id, "❗ Je potřeba poslat fotografii automatu zvenku PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_automat_before"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
+        if not save_maintenance_photo(chat_id, msg, state):
+            return jsonify({"ok": True})
         user_states[chat_id] = "maintenance_photo_table_before"
         send_message(chat_id, "📸 Pracovní stůl – PŘED údržbou. Pošlete fotografii pracovní plochy.", CANCEL_KEYBOARD)
         persist_process(chat_id)
@@ -982,7 +1007,8 @@ def webhook():
             send_message(chat_id, "❗ Je potřeba poslat fotografii pracovního stolu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_table_before"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
+        if not save_maintenance_photo(chat_id, msg, state):
+            return jsonify({"ok": True})
         user_states[chat_id] = "maintenance_photo_inside_before"
         send_message(chat_id, "📸 Vnitřek automatu – PŘED údržbou. Pošlete fotografii vnitřku automatu.", CANCEL_KEYBOARD)
         persist_process(chat_id)
@@ -993,7 +1019,8 @@ def webhook():
             send_message(chat_id, "❗ Je potřeba poslat fotografii vnitřku automatu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_inside_before"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
+        if not save_maintenance_photo(chat_id, msg, state):
+            return jsonify({"ok": True})
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
         persist_process(chat_id)
@@ -1004,7 +1031,8 @@ def webhook():
             send_message(chat_id, "❗ Pošlete fotografii čistých mixérů, abyste mohli pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_mixers_clean"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
+        if not save_maintenance_photo(chat_id, msg, state):
+            return jsonify({"ok": True})
         user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
@@ -1016,7 +1044,8 @@ def webhook():
             send_message(chat_id, "❗ Pošlete fotografii čistého stolu PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_table_after"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
+        if not save_maintenance_photo(chat_id, msg, state):
+            return jsonify({"ok": True})
         user_states[chat_id] = "maintenance_photo_inside_after"
         send_message(chat_id, "📸 Vnitřek automatu – PO údržbě. Vyfoťte čistý vnitřek automatu.", CANCEL_KEYBOARD)
         persist_process(chat_id)
@@ -1027,7 +1056,8 @@ def webhook():
             send_message(chat_id, "❗ Pošlete fotografii vnitřku automatu PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_inside_after"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
+        if not save_maintenance_photo(chat_id, msg, state):
+            return jsonify({"ok": True})
         user_states[chat_id] = "maintenance_photo_exterior_after"
         send_message(chat_id, "📸 Automat zvenku – PO údržbě. Vyfoťte čistý automat zvenku.", CANCEL_KEYBOARD)
         persist_process(chat_id)
@@ -1038,7 +1068,8 @@ def webhook():
             send_message(chat_id, "❗ Pošlete fotografii automatu zvenku PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_after"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
+        if not save_maintenance_photo(chat_id, msg, state):
+            return jsonify({"ok": True})
         user_data[chat_id]["stocktake"] = {}
         user_data[chat_id]["stocktake_index"] = 0
         user_states[chat_id] = "maintenance_stocktake"
