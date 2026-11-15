@@ -2,6 +2,8 @@ import os
 import json
 import hmac
 import logging
+import re
+import mimetypes
 from datetime import datetime
 from urllib.parse import quote
 
@@ -16,6 +18,7 @@ log = logging.getLogger("mecoffee-bot")
 TOKEN = os.environ.get("BOT_TOKEN", "")
 API_URL = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else ""
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Mecoffee_Service_Reports")
+DRIVE_PHOTOS_FOLDER_ID = os.environ.get("DRIVE_PHOTOS_FOLDER_ID", "1GDEUIAKb6odIM4cFD9aMasrGtZ8sfd5B")
 INVENTORY_SPREADSHEET_ID = os.environ.get("INVENTORY_SPREADSHEET_ID", "1e-Cd3tr0Xm5iukhd-RUDIdUqSr3_nPuiVagO3Hrc_G0")
 
 if not TOKEN:
@@ -180,11 +183,83 @@ def image_file_id(msg):
         return doc.get("file_id")
     return None
 
-def upload_photo(file_id):
-    response = requests.get(f"{API_URL}/getFile", params={"file_id": file_id}, timeout=15)
+def drive_request(method, path, **kwargs):
+    """Authenticated Drive API request; never enable public file permissions."""
+    access_token = credentials.get_access_token().access_token
+    headers = dict(kwargs.pop("headers", {}))
+    headers["Authorization"] = "Bearer " + access_token
+    response = requests.request(method, "https://www.googleapis.com/" + path,
+                                headers=headers, timeout=45, **kwargs)
     response.raise_for_status()
-    file_path = response.json()["result"]["file_path"]
-    return f"https://api.telegram.org/file/bot{TOKEN}/{quote(file_path)}"
+    return response
+
+
+def drive_location_folder(account):
+    """Find/create exactly one folder per location directly under the configured root."""
+    name = str(account.get("worksheet") or account.get("location") or "").strip()
+    if not name:
+        raise ValueError("Missing location folder name")
+    if "zelezny" in name.casefold() or "železn" in name.casefold():
+        raise ValueError("Železný Brod is no longer an active location")
+    safe_name = re.sub(r"[^\\w .-]", "_", name)
+    query = ("name = '" + safe_name.replace("\\", "\\\\").replace("'", "\\'") +
+             "' and mimeType = 'application/vnd.google-apps.folder' and '" +
+             DRIVE_PHOTOS_FOLDER_ID + "' in parents and trashed = false")
+    result = drive_request("GET", "drive/v3/files", params={
+        "q": query, "fields": "files(id,name),nextPageToken", "pageSize": 100,
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"
+    }).json()
+    files = result.get("files", [])
+    if files:
+        return files[0]["id"]
+    response = drive_request("POST", "drive/v3/files", json={
+        "name": safe_name, "mimeType": "application/vnd.google-apps.folder",
+        "parents": [DRIVE_PHOTOS_FOLDER_ID]
+    }, params={"fields": "id", "supportsAllDrives": "true"})
+    return response.json()["id"]
+
+
+PHOTO_LABELS = {
+    "maintenance_photo_exterior_before": "Automat_pred",
+    "maintenance_photo_table_before": "Stul_pred",
+    "maintenance_photo_inside_before": "Vnitrni_prostor_pred",
+    "maintenance_photo_mixers": "Mixery_po",
+    "maintenance_photo_table_after": "Stul_po",
+    "maintenance_photo_inside_after": "Vnitrni_prostor_po",
+    "maintenance_photo_exterior_after": "Automat_po",
+}
+
+
+def upload_photo(file_id, account, photo_type):
+    """Download Telegram photo and store private permanent Drive file."""
+    if not DRIVE_PHOTOS_FOLDER_ID:
+        raise ValueError("DRIVE_PHOTOS_FOLDER_ID is missing")
+    info = requests.get(f"{API_URL}/getFile", params={"file_id": file_id}, timeout=15)
+    info.raise_for_status()
+    info_json = info.json()
+    if not info_json.get("ok"):
+        raise RuntimeError("Telegram getFile failed")
+    telegram_path = info_json["result"]["file_path"]
+    photo = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{quote(telegram_path)}", timeout=45)
+    photo.raise_for_status()
+    ext = telegram_path.rsplit(".", 1)[-1].lower() if "." in telegram_path else "jpg"
+    if ext not in ("jpg", "jpeg", "png", "webp", "heic"):
+        ext = "jpg"
+    filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + PHOTO_LABELS[photo_type] + "." + ext
+    folder_id = drive_location_folder(account)
+    metadata = {"name": filename, "parents": [folder_id]}
+    mime = mimetypes.guess_type(filename)[0] or "image/jpeg"
+    boundary = "mecoffee_upload_boundary"
+    body = (("--" + boundary + "\\r\\nContent-Type: application/json; charset=UTF-8\\r\\n\\r\\n").replace("\\r", "\r").replace("\\n", "\n").encode()
+            + json.dumps(metadata).encode("utf-8")
+            + ("\\r\\n--" + boundary + "\\r\\nContent-Type: " + mime + "\\r\\n\\r\\n").replace("\\r", "\r").replace("\\n", "\n").encode()
+            + photo.content
+            + ("\\r\\n--" + boundary + "--").replace("\\r", "\r").replace("\\n", "\n").encode())
+    uploaded = drive_request("POST", "upload/drive/v3/files",
+        params={"uploadType": "multipart", "fields": "id,webViewLink", "supportsAllDrives": "true"},
+        headers={"Content-Type": "multipart/related; boundary=" + boundary}, data=body).json()
+    return uploaded.get("webViewLink") or ("https://drive.google.com/file/d/" + uploaded["id"] + "/view")
+
 
 def ensure_worksheet(name, headers, book=None):
     book = book or spreadsheet
@@ -876,7 +951,7 @@ def webhook():
             send_message(chat_id, "❗ Je potřeba poslat fotografii automatu zvenku PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_automat_before"] = upload_photo(image_file_id(msg))
+        user_data[chat_id]["photo_automat_before"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
         user_states[chat_id] = "maintenance_photo_table_before"
         send_message(chat_id, "📸 Pracovní stůl – PŘED údržbou. Pošlete fotografii pracovní plochy.", CANCEL_KEYBOARD)
         persist_process(chat_id)
@@ -887,7 +962,7 @@ def webhook():
             send_message(chat_id, "❗ Je potřeba poslat fotografii pracovního stolu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_table_before"] = upload_photo(image_file_id(msg))
+        user_data[chat_id]["photo_table_before"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
         user_states[chat_id] = "maintenance_photo_inside_before"
         send_message(chat_id, "📸 Vnitřek automatu – PŘED údržbou. Pošlete fotografii vnitřku automatu.", CANCEL_KEYBOARD)
         persist_process(chat_id)
@@ -898,7 +973,7 @@ def webhook():
             send_message(chat_id, "❗ Je potřeba poslat fotografii vnitřku automatu PŘED údržbou. Bez fotografie nelze pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_inside_before"] = upload_photo(image_file_id(msg))
+        user_data[chat_id]["photo_inside_before"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
         persist_process(chat_id)
@@ -909,7 +984,7 @@ def webhook():
             send_message(chat_id, "❗ Pošlete fotografii čistých mixérů, abyste mohli pokračovat.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_mixers_clean"] = upload_photo(image_file_id(msg))
+        user_data[chat_id]["photo_mixers_clean"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
         user_data[chat_id]["step_index"] = user_data[chat_id].get("step_index", 0) + 1
         user_states[chat_id] = "maintenance_step"
         send_current_step(chat_id)
@@ -921,7 +996,7 @@ def webhook():
             send_message(chat_id, "❗ Pošlete fotografii čistého stolu PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_table_after"] = upload_photo(image_file_id(msg))
+        user_data[chat_id]["photo_table_after"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
         user_states[chat_id] = "maintenance_photo_inside_after"
         send_message(chat_id, "📸 Vnitřek automatu – PO údržbě. Vyfoťte čistý vnitřek automatu.", CANCEL_KEYBOARD)
         persist_process(chat_id)
@@ -932,7 +1007,7 @@ def webhook():
             send_message(chat_id, "❗ Pošlete fotografii vnitřku automatu PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_inside_after"] = upload_photo(image_file_id(msg))
+        user_data[chat_id]["photo_inside_after"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
         user_states[chat_id] = "maintenance_photo_exterior_after"
         send_message(chat_id, "📸 Automat zvenku – PO údržbě. Vyfoťte čistý automat zvenku.", CANCEL_KEYBOARD)
         persist_process(chat_id)
@@ -943,7 +1018,7 @@ def webhook():
             send_message(chat_id, "❗ Pošlete fotografii automatu zvenku PO údržbě.", CANCEL_KEYBOARD)
             persist_process(chat_id)
             return jsonify({"ok": True})
-        user_data[chat_id]["photo_after"] = upload_photo(image_file_id(msg))
+        user_data[chat_id]["photo_after"] = upload_photo(image_file_id(msg), user_data[chat_id]["account"], state)
         user_data[chat_id]["stocktake"] = {}
         user_data[chat_id]["stocktake_index"] = 0
         user_states[chat_id] = "maintenance_stocktake"
