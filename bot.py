@@ -250,11 +250,10 @@ def upload_photo(file_id, account, photo_type):
     metadata = {"name": filename, "parents": [folder_id]}
     mime = mimetypes.guess_type(filename)[0] or "image/jpeg"
     boundary = "mecoffee_upload_boundary"
-    body = (("--" + boundary + "\\r\\nContent-Type: application/json; charset=UTF-8\\r\\n\\r\\n").replace("\\r", "\r").replace("\\n", "\n").encode()
-            + json.dumps(metadata).encode("utf-8")
-            + ("\\r\\n--" + boundary + "\\r\\nContent-Type: " + mime + "\\r\\n\\r\\n").replace("\\r", "\r").replace("\\n", "\n").encode()
-            + photo.content
-            + ("\\r\\n--" + boundary + "--").replace("\\r", "\r").replace("\\n", "\n").encode())
+    header = ("--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n").encode("utf-8")
+    middle = ("\r\n--" + boundary + "\r\nContent-Type: " + mime + "\r\n\r\n").encode("utf-8")
+    ending = ("\r\n--" + boundary + "--").encode("utf-8")
+    body = header + json.dumps(metadata).encode("utf-8") + middle + photo.content + ending
     uploaded = drive_request("POST", "upload/drive/v3/files",
         params={"uploadType": "multipart", "fields": "id,webViewLink", "supportsAllDrives": "true"},
         headers={"Content-Type": "multipart/related; boundary=" + boundary}, data=body).json()
