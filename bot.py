@@ -4,6 +4,7 @@ import hmac
 import logging
 import re
 import mimetypes
+import base64
 from datetime import datetime
 from urllib.parse import quote
 
@@ -18,6 +19,8 @@ log = logging.getLogger("mecoffee-bot")
 TOKEN = os.environ.get("BOT_TOKEN", "")
 API_URL = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else ""
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Mecoffee_Service_Reports")
+PHOTO_UPLOAD_SCRIPT_URL = os.environ.get("PHOTO_UPLOAD_SCRIPT_URL", "").strip()
+PHOTO_UPLOAD_SECRET = os.environ.get("PHOTO_UPLOAD_SECRET", "").strip()
 DRIVE_PHOTOS_FOLDER_ID = os.environ.get("DRIVE_PHOTOS_FOLDER_ID", "1GDEUIAKb6odIM4cFD9aMasrGtZ8sfd5B")
 INVENTORY_SPREADSHEET_ID = os.environ.get("INVENTORY_SPREADSHEET_ID", "1e-Cd3tr0Xm5iukhd-RUDIdUqSr3_nPuiVagO3Hrc_G0")
 
@@ -276,33 +279,44 @@ PHOTO_LABELS = {
 
 
 def upload_photo(file_id, account, photo_type):
-    """Download Telegram photo and store private permanent Drive file."""
-    if not DRIVE_PHOTOS_FOLDER_ID:
-        raise ValueError("DRIVE_PHOTOS_FOLDER_ID is missing")
+    """Save image via user-owned Apps Script, keeping Drive file private."""
+    if not PHOTO_UPLOAD_SCRIPT_URL or not PHOTO_UPLOAD_SECRET:
+        raise RuntimeError("Configure PHOTO_UPLOAD_SCRIPT_URL and PHOTO_UPLOAD_SECRET in Render")
+    if not PHOTO_UPLOAD_SCRIPT_URL.startswith("https://script.google.com/macros/s/"):
+        raise ValueError("PHOTO_UPLOAD_SCRIPT_URL must be a deployed Google Apps Script /exec URL")
     info = requests.get(f"{API_URL}/getFile", params={"file_id": file_id}, timeout=15)
     info.raise_for_status()
-    info_json = info.json()
-    if not info_json.get("ok"):
+    result = info.json()
+    if not result.get("ok"):
         raise RuntimeError("Telegram getFile failed")
-    telegram_path = info_json["result"]["file_path"]
-    photo = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{quote(telegram_path)}", timeout=45)
+    path = result["result"]["file_path"]
+    photo = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{quote(path)}", timeout=45)
     photo.raise_for_status()
-    ext = telegram_path.rsplit(".", 1)[-1].lower() if "." in telegram_path else "jpg"
+    if len(photo.content) > 15_000_000:
+        raise ValueError("Image exceeds Apps Script 15 MB limit")
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else "jpg"
     if ext not in ("jpg", "jpeg", "png", "webp", "heic"):
         ext = "jpg"
+    location = str(account.get("worksheet") or account.get("location") or "").strip()
+    if not location:
+        raise ValueError("Missing location name")
     filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + PHOTO_LABELS[photo_type] + "." + ext
-    folder_id = drive_location_folder(account)
-    metadata = {"name": filename, "parents": [folder_id]}
-    mime = mimetypes.guess_type(filename)[0] or "image/jpeg"
-    boundary = "mecoffee_upload_boundary"
-    header = ("--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n").encode("utf-8")
-    middle = ("\r\n--" + boundary + "\r\nContent-Type: " + mime + "\r\n\r\n").encode("utf-8")
-    ending = ("\r\n--" + boundary + "--").encode("utf-8")
-    body = header + json.dumps(metadata).encode("utf-8") + middle + photo.content + ending
-    uploaded = drive_request("POST", "upload/drive/v3/files",
-        params={"uploadType": "multipart", "fields": "id,webViewLink", "supportsAllDrives": "true"},
-        headers={"Content-Type": "multipart/related; boundary=" + boundary}, data=body).json()
-    return uploaded.get("webViewLink") or ("https://drive.google.com/file/d/" + uploaded["id"] + "/view")
+    payload = {
+        "secret": PHOTO_UPLOAD_SECRET,
+        "location": location,
+        "filename": filename,
+        "mime_type": mimetypes.guess_type(filename)[0] or "image/jpeg",
+        "content_base64": base64.b64encode(photo.content).decode("ascii"),
+    }
+    response = requests.post(PHOTO_UPLOAD_SCRIPT_URL, json=payload, timeout=100)
+    response.raise_for_status()
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError("Apps Script did not return JSON; check Web app deployment access")
+    if not data.get("ok") or not data.get("url"):
+        raise RuntimeError("Apps Script photo upload failed: " + str(data.get("error", "Unknown error")))
+    return data["url"]
 
 
 def ensure_worksheet(name, headers, book=None):
