@@ -129,7 +129,7 @@ WORKER_MENU = {
     "is_persistent": True,
 }
 ADMIN_MENU = {
-    "keyboard": [["🔔 Připomenout údržbu"]],
+    "keyboard": [["📦 Příjem zboží"], ["🔔 Připomenout údržbu"]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
@@ -708,8 +708,27 @@ def ask_stocktake_item(chat_id):
     key, label = STOCKTAKE_ITEMS[index]
     send_message(chat_id, f"📦 Inventura skladu – {label}\n\nKolik balení nyní zbývá na skladě? Zadejte počet balení (např. 3 nebo 0).", CANCEL_KEYBOARD)
 
-def start_receipt(chat_id, username):
-    account = authenticated_account(chat_id)
+def start_admin_receipt(chat_id):
+    if not is_admin(chat_id):
+        send_message(chat_id, "❌ Pouze pro správce.")
+        return
+    choices = []
+    for key, account in LOCATION_ACCOUNTS.items():
+        if not isinstance(account, dict):
+            continue
+        name = str(account.get("location", "")).strip()
+        if not name or "železn" in name.casefold() or "zelez" in name.casefold():
+            continue
+        choices.append([{"text": name, "callback_data": "receiptloc:" + str(key)}])
+    if not choices:
+        send_message(chat_id, "⚠️ Nejsou nastavené žádné aktivní provozovny.", ADMIN_MENU)
+        return
+    choices.append([{"text": "❌ Zrušit", "callback_data": "receiptloc:cancel"}])
+    send_message(chat_id, "📦 Vyberte provozovnu, na kterou posíláte zboží:", inline_keyboard=choices)
+
+
+def start_receipt(chat_id, username, destination_account=None):
+    account = destination_account or authenticated_account(chat_id)
     if not account:
         start_login(chat_id)
         return
@@ -855,6 +874,25 @@ def webhook():
             requests.post(f"{API_URL}/answerCallbackQuery", json={"callback_query_id": callback.get("id")}, timeout=10)
         except Exception:
             log.warning("Could not answer callback query")
+        if callback_chat_id is not None and callback_data.startswith("receiptloc:"):
+            if not is_admin(callback_chat_id):
+                send_message(callback_chat_id, "❌ Pouze pro správce.")
+            elif callback_data == "receiptloc:cancel":
+                show_menu(callback_chat_id)
+            elif is_workflow_state(user_states.get(callback_chat_id)):
+                send_message(callback_chat_id, "⚠️ Nejprve dokončete nebo zrušte rozpracovaný proces.")
+            else:
+                location_key = callback_data[len("receiptloc:"):]
+                destination = LOCATION_ACCOUNTS.get(location_key)
+                if not isinstance(destination, dict) or not destination.get("worksheet") or "železn" in str(destination.get("location", "")).casefold() or "zelez" in str(destination.get("location", "")).casefold():
+                    send_message(callback_chat_id, "❌ Neplatná provozovna.")
+                else:
+                    sender = callback.get("from", {})
+                    username = sender.get("username") or sender.get("first_name") or str(sender.get("id", "admin"))
+                    safe_destination = {"login": str(destination.get("login", "")), "location": str(destination.get("location", "")), "worksheet": str(destination.get("worksheet", "")), "role": "worker"}
+                    start_receipt(callback_chat_id, username, destination_account=safe_destination)
+                    persist_process(callback_chat_id)
+            return jsonify({"ok": True})
         if callback_chat_id is not None and callback_data.startswith("remind:"):
             if not is_admin(callback_chat_id):
                 send_message(callback_chat_id, "❌ Tuto funkci může používat pouze správce.", WORKER_MENU)
@@ -998,7 +1036,10 @@ def webhook():
         persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "📦 Příjem zboží":
-        start_receipt(chat_id, username)
+        if is_admin(chat_id):
+            start_admin_receipt(chat_id)
+        else:
+            start_receipt(chat_id, username)
         persist_process(chat_id)
         return jsonify({"ok": True})
     if text == "🔔 Připomenout údržbu":
