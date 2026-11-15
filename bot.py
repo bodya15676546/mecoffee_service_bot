@@ -194,6 +194,26 @@ def drive_request(method, path, **kwargs):
     return response
 
 
+def drive_cleaning_folder():
+    """Find or create the shared 'foto cisteni' folder inside doklady k provozu."""
+    folder_name = "foto cisteni"
+    query = ("name = '" + folder_name +
+             "' and mimeType = 'application/vnd.google-apps.folder' and '" +
+             DRIVE_PHOTOS_FOLDER_ID + "' in parents and trashed = false")
+    result = drive_request("GET", "drive/v3/files", params={
+        "q": query, "fields": "files(id,name),nextPageToken", "pageSize": 100,
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"
+    }).json()
+    found = result.get("files", [])
+    if found:
+        return found[0]["id"]
+    created = drive_request("POST", "drive/v3/files", json={
+        "name": folder_name, "mimeType": "application/vnd.google-apps.folder",
+        "parents": [DRIVE_PHOTOS_FOLDER_ID]
+    }, params={"fields": "id", "supportsAllDrives": "true"}).json()
+    return created["id"]
+
+
 def drive_location_folder(account):
     """Find/create exactly one folder per location directly under the configured root."""
     name = str(account.get("worksheet") or account.get("location") or "").strip()
@@ -202,9 +222,10 @@ def drive_location_folder(account):
     if "zelezny" in name.casefold() or "železn" in name.casefold():
         raise ValueError("Železný Brod is no longer an active location")
     safe_name = re.sub(r"[^\\w .-]", "_", name)
+    parent_id = drive_cleaning_folder()
     query = ("name = '" + safe_name.replace("\\", "\\\\").replace("'", "\\'") +
              "' and mimeType = 'application/vnd.google-apps.folder' and '" +
-             DRIVE_PHOTOS_FOLDER_ID + "' in parents and trashed = false")
+             parent_id + "' in parents and trashed = false")
     result = drive_request("GET", "drive/v3/files", params={
         "q": query, "fields": "files(id,name),nextPageToken", "pageSize": 100,
         "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"
@@ -214,7 +235,7 @@ def drive_location_folder(account):
         return files[0]["id"]
     response = drive_request("POST", "drive/v3/files", json={
         "name": safe_name, "mimeType": "application/vnd.google-apps.folder",
-        "parents": [DRIVE_PHOTOS_FOLDER_ID]
+        "parents": [parent_id]
     }, params={"fields": "id", "supportsAllDrives": "true"})
     return response.json()["id"]
 
