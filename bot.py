@@ -22,6 +22,7 @@ SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Mecoffee_Service_Reports"
 PHOTO_UPLOAD_SCRIPT_URL = os.environ.get("PHOTO_UPLOAD_SCRIPT_URL", "").strip()
 PHOTO_UPLOAD_SECRET = os.environ.get("PHOTO_UPLOAD_SECRET", "").strip()
 DRIVE_PHOTOS_FOLDER_ID = os.environ.get("DRIVE_PHOTOS_FOLDER_ID", "1GDEUIAKb6odIM4cFD9aMasrGtZ8sfd5B")
+OWNER_TELEGRAM_ID = os.environ.get("OWNER_TELEGRAM_ID", "").strip()
 INVENTORY_SPREADSHEET_ID = os.environ.get("INVENTORY_SPREADSHEET_ID", "1e-Cd3tr0Xm5iukhd-RUDIdUqSr3_nPuiVagO3Hrc_G0")
 
 if not TOKEN:
@@ -875,6 +876,23 @@ def webhook():
     text = msg.get("text", "").strip()
     restore_process(chat_id)
     state = user_states.get(chat_id)
+
+    if text.split("@", 1)[0].lower() in ("/switch", "/stop"):
+        # Restricted to the owner's Telegram account, independent of location login.
+        if not OWNER_TELEGRAM_ID or str(sender.get("id", "")) != OWNER_TELEGRAM_ID:
+            send_message(chat_id, "⛔ Tento příkaz je dostupný pouze správci.")
+            return jsonify({"ok": True})
+        if state and state.startswith("maintenance_"):
+            send_message(chat_id, "⚠️ Nejdříve dokončete nebo zrušte rozpracovanou údržbu. Příkaz /switch ji nesmí přerušit.")
+            resume_process(chat_id)
+            return jsonify({"ok": True})
+        sessions.pop(chat_key, None)
+        delete_auth_session(chat_id)
+        user_states.pop(chat_id, None)
+        user_data.pop(chat_id, None)
+        start_login(chat_id)
+        persist_process(chat_id)
+        return jsonify({"ok": True})
 
     if text == "/start":
         if restore_auth_session(chat_id):
